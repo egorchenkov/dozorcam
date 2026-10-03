@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dozorcam — видеонаблюдение на своём сервере с интерфейсом в Telegram</title>
+<meta name="description" content="Dozorcam пишет короткий буфер с IP-камер, находит людей и шлёт снимки и клипы в forum-группу Telegram. Без облака.">
+<link rel="alternate" hreflang="en" href="../">
+<link rel="alternate" hreflang="ru" href="./">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header>
+  <a class="logo" href="./">Dozorcam</a>
+  <nav class="lang"><a href="../" hreflang="en" lang="en">English</a><a href="./" aria-current="page">Русский</a></nav>
+</header>
+<main>
+<section class="hero">
+  <div>
+    <h1>Ваши камеры, ваш Telegram, без облака</h1>
+    <p class="lead">Dozorcam следит за IP-камерами на вашем Linux-узле, находит людей и шлёт
+    снимки и клипы в forum-группу Telegram: у каждой камеры своя тема, плюс тема «Пульт»
+    с состоянием всей системы.</p>
+    <p class="cta"><a class="primary" href="#install">Установка</a><a href="https://github.com/egorchenkov/dozorcam">Исходники на GitHub</a></p>
+  </div>
+  <img src="../assets/demo.gif" width="480" height="270" alt="Иллюстрация: человек идёт по садовой дорожке, детектор обводит его рамкой">
+</section>
+
+<h2 id="features">Что умеет</h2>
+<div class="features">
+  <div><b>Буфер записи в RAM</b>Кольцевой буфер на каждую камеру в tmpfs: моменты вокруг события под рукой, а SD-карта и диск не изнашиваются.</div>
+  <div><b>Люди, а не листья</b>Детектор движения с порогом шума на камеру, затем ONNX-детектор людей (по умолчанию YOLOX-Tiny) и фильтр неподвижных предметов.</div>
+  <div><b>Интерфейс — Telegram</b>Снимки и клипы по событию и по запросу, пауза, переименование, снятие камеры — кнопками в теме камеры.</div>
+  <div><b>Настройка из чата</b>Одноразовый код в логах делает вас владельцем; бот сам заводит темы и ищет камеры по ONVIF / WS-Discovery.</div>
+  <div><b>Модели и пороги</b>Модели YOLOX, YOLOv5 или в стиле YOLOv8 переключаются из бота на ходу; порог на каждую камеру калибруется по шуму сцены.</div>
+  <div><b>Компактно и закрыто</b>Один мультиархитектурный образ (amd64, arm64) для движка и бота: не root, корневая ФС только на чтение, без capabilities, healthcheck.</div>
+</div>
+
+<h2 id="install">Установка в 3 шага</h2>
+<p>Нужен Linux (amd64 или arm64) с Docker и плагином compose; узлу нужен доступ к <code>api.telegram.org</code>.</p>
+<ol class="steps">
+  <li><b>Создайте бота.</b> В Telegram откройте <a href="https://t.me/BotFather">@BotFather</a>, отправьте <code>/newbot</code> и скопируйте токен.</li>
+  <li><b>Запустите Dozorcam</b> с этим токеном:
+<pre><code>git clone https://github.com/egorchenkov/dozorcam.git &amp;&amp; cd dozorcam
+cp .env.example .env &amp;&amp; sed -i 's/^CCTV_BOT_TOKEN=.*/CCTV_BOT_TOKEN=&lt;токен&gt;/' .env
+docker compose pull --ignore-pull-failures &amp;&amp; docker compose up -d</code></pre>
+  Релизный образ — <code>ghcr.io/egorchenkov/dozorcam</code>; если скачать его не удалось, compose соберёт образ локально.</li>
+  <li><b>Станьте владельцем.</b> <code>docker compose logs bot | grep SETUP</code> покажет одноразовый код — отправьте боту в личку <code>/start &lt;код&gt;</code>.
+  Затем создайте группу с включёнными <b>Темами</b>, добавьте бота администратором («Управление темами», «Удаление сообщений») и отправьте <code>/add</code>, чтобы подключить камеры.</li>
+</ol>
+
+<h2 id="cameras">Какие камеры подходят</h2>
+<table>
+  <tr><th>Что</th><th>Как подключается</th></tr>
+  <tr><td>ONVIF (Profile S)</td><td>Находится сама (локальные сети /24 и WS-Discovery); адреса потока и снимка — через ONVIF Media.</td></tr>
+  <tr><td>Любая RTSP-камера</td><td><code>/add rtsp://хост:порт/путь</code>; снимок берётся из потока.</td></tr>
+  <tr><td>Hikvision (ISAPI)</td><td>Встроенные шаблоны RTSP и <code>/ISAPI/Streaming/channels/101/picture</code>, где ONVIF молчит; гейт по людям от аналитики самой камеры — по желанию.</td></tr>
+</table>
+<p class="note">Проверено вживую на камерах Hikvision G0/G2/G5 и Tantos. Камеру нужно заранее активировать средствами производителя. Другие производители должны работать через ONVIF/RTSP, но не проверялись.</p>
+
+<h2 id="screens">Как это выглядит</h2>
+<div class="shots">
+  <div class="chat" aria-label="Тема камеры в Telegram, иллюстрация">
+    <div class="topic"># Двор · тема камеры</div>
+    <div class="msg">
+      <img src="../assets/event.png" width="480" height="270" alt="Снимок события: человек на дорожке в рамке детектора">
+      <p>👤 <b>Обнаружен человек</b> · Двор · 14:02:19</p>
+    </div>
+    <div class="btns"><span>🎞 Клип вокруг кадра</span><span>📷 Кадр</span><span>🎞 Клип 30 с</span><span>🔄 Статус</span></div>
+  </div>
+  <div>
+    <p>У каждой камеры своя тема. Срабатывание приходит снимком с рамкой детектора; кнопки под ним собирают клип вокруг этого момента из буфера, присылают свежий кадр или состояние камеры.</p>
+    <p>В теме «Пульт» — состояние системы, меню модели детектора (<code>/model</code>) и пороги по камерам.</p>
+    <p class="note">Картинки на странице — иллюстрации: нарисованная сцена и настоящие надписи кнопок бота. Записей с реальных камер здесь нет.</p>
+  </div>
+</div>
+
+<h2 id="languages">Языки</h2>
+<p>Бот говорит по-<b>русски</b> и по-<b>английски</b> и подстраивается под язык Telegram (<code>/lang en|ru</code> — сменить). Другие языки планируются.</p>
+
+<h2 id="license">Лицензия</h2>
+<p>Dozorcam распространяется под <a href="https://github.com/egorchenkov/dozorcam/blob/master/LICENSE">Apache-2.0</a>. В образе есть YOLOX-Tiny (Apache-2.0) и сборка FFmpeg под GPL-3.0-or-later — см. <a href="https://github.com/egorchenkov/dozorcam/blob/master/THIRD_PARTY.md">THIRD_PARTY.md</a>. Веса YOLOv5/YOLOv8 (AGPL-3.0) не поставляются, их можно добавить самостоятельно.</p>
+<p class="note">Домашний проект одного человека, «как есть», без гарантий поддержки.</p>
+</main>
+<footer>Dozorcam · <a href="https://github.com/egorchenkov/dozorcam">GitHub</a> · <a href="../" hreflang="en" lang="en">English version</a></footer>
+</body>
+</html>

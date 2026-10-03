@@ -1,0 +1,39 @@
+# Тесты на каждый PR и push в master; плюс gitleaks по дереву.
+name: ci
+
+on:
+  pull_request:
+  workflow_call:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      # Контрактные тесты моста гоняют настоящий ffmpeg/openssl/curl.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e . --no-deps
+      - run: python -m pytest -q
+
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        run: >
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0
+          git /repo --redact --no-banner --exit-code 1

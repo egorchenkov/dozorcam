@@ -1,0 +1,33 @@
+[Unit]
+Description=CCTV RTSP recorder and motion pipeline
+After=cctv-bridge.service cctv-rtsp-proxy.service
+Requires=cctv-bridge.service cctv-rtsp-proxy.service
+OnFailure=cctv-alert@%N.service
+
+[Service]
+Type=simple
+User=cctv
+Group=cctv
+Environment=CCTV_CONFIG_DIR=/etc/cctv
+Environment=CCTV_RUNTIME_CAMERA_CONFIG=/run/cctv/cameras.proxy.json
+# venv, а не системный python: opencv стоял только в ~/.local служебного пользователя,
+# сервисный пользователь его не видел и детектор молча простаивал.
+ExecStart=/opt/cctv/venv/bin/cctv-pipeline
+ExecStartPre=/opt/cctv/scripts/retention-guard.sh check
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/cctv
+UMask=0077
+# Бюджет CPU (25.09.2026): вес ниже умолчания (100) — при нехватке ядер боты
+# и прокси хоста выигрывают у детектора; жёсткий потолок в три ядра из четырёх
+# оставляет хосту ядро даже в худшую ветреную ночь. Потолок намеренно не 150 %:
+# в этой же cgroup живут ffmpeg-рекордеры, и троттлинг квоты — это дыры в записи.
+CPUWeight=50
+CPUQuota=300%
+
+[Install]
+WantedBy=multi-user.target

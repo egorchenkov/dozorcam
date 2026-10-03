@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dozorcam — self-hosted camera watcher with a Telegram front end</title>
+<meta name="description" content="Dozorcam keeps a short recording buffer from your IP cameras, detects people and sends snapshots and clips to a Telegram forum group. No cloud.">
+<link rel="alternate" hreflang="ru" href="ru/">
+<link rel="alternate" hreflang="en" href="./">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header>
+  <a class="logo" href="./">Dozorcam</a>
+  <nav class="lang"><a href="./" aria-current="page">English</a><a href="ru/" hreflang="ru" lang="ru">Русский</a></nav>
+</header>
+<main>
+<section class="hero">
+  <div>
+    <h1>Your cameras, your Telegram, no cloud</h1>
+    <p class="lead">Dozorcam watches IP cameras on your own Linux box, finds people and sends
+    snapshots and clips to a Telegram forum group — one topic per camera, plus a “Control”
+    topic for the whole system.</p>
+    <p class="cta"><a class="primary" href="#install">Install</a><a href="https://github.com/egorchenkov/dozorcam">Source on GitHub</a></p>
+  </div>
+  <img src="assets/demo.gif" width="480" height="270" alt="Illustration: a person walks along a garden path and the detector draws a box around them">
+</section>
+
+<h2 id="features">What it does</h2>
+<div class="features">
+  <div><b>Recording buffer in RAM</b>A rolling buffer per camera on tmpfs: the moments around an event are there, and the SD card or disk is not worn out.</div>
+  <div><b>People, not leaves</b>Motion gate with a per-camera noise floor, then an ONNX person detector (YOLOX-Tiny by default) and a filter for objects that never move.</div>
+  <div><b>Telegram as the interface</b>Snapshots and clips on detection and on demand, pause, rename, retire a camera — all with buttons in the camera topic.</div>
+  <div><b>Setup from the chat</b>A one-time code in the logs makes you the owner; the bot creates its topics and finds cameras over ONVIF / WS-Discovery.</div>
+  <div><b>Models and thresholds</b>YOLOX, YOLOv5 or YOLOv8-style models, switched on the fly from the bot; per-camera threshold auto-calibrated against the scene noise.</div>
+  <div><b>Small and locked down</b>One multi-arch image (amd64, arm64) for engine and bot: non-root, read-only root filesystem, no capabilities, healthchecks.</div>
+</div>
+
+<h2 id="install">Install in 3 steps</h2>
+<p>You need Linux (amd64 or arm64) with Docker and the compose plugin, and the node must reach <code>api.telegram.org</code>.</p>
+<ol class="steps">
+  <li><b>Create a bot.</b> In Telegram open <a href="https://t.me/BotFather">@BotFather</a>, send <code>/newbot</code> and copy the token.</li>
+  <li><b>Start Dozorcam</b> with the token:
+<pre><code>git clone https://github.com/egorchenkov/dozorcam.git &amp;&amp; cd dozorcam
+cp .env.example .env &amp;&amp; sed -i 's/^CCTV_BOT_TOKEN=.*/CCTV_BOT_TOKEN=&lt;token&gt;/' .env
+docker compose pull --ignore-pull-failures &amp;&amp; docker compose up -d</code></pre>
+  The release image is <code>ghcr.io/egorchenkov/dozorcam</code>; if it cannot be pulled, compose builds it locally.</li>
+  <li><b>Claim the bot.</b> <code>docker compose logs bot | grep SETUP</code> prints a one-time code — send <code>/start &lt;code&gt;</code> to the bot in a private chat.
+  Then create a group with <b>Topics</b> enabled, add the bot as an admin (“Manage topics”, “Delete messages”) and send <code>/add</code> to connect cameras.</li>
+</ol>
+
+<h2 id="cameras">Supported cameras</h2>
+<table>
+  <tr><th>Kind</th><th>How it is connected</th></tr>
+  <tr><td>ONVIF (Profile S)</td><td>Found automatically (local /24 networks and WS-Discovery); stream and snapshot URIs come from ONVIF Media.</td></tr>
+  <tr><td>Any RTSP camera</td><td><code>/add rtsp://host:port/path</code>; the snapshot is taken from the stream.</td></tr>
+  <tr><td>Hikvision (ISAPI)</td><td>Built-in RTSP and <code>/ISAPI/Streaming/channels/101/picture</code> templates where ONVIF is silent; optional person gate from the camera's own analytics.</td></tr>
+</table>
+<p class="note">Tested live on Hikvision G0/G2/G5 and Tantos cameras. Cameras must be activated with the vendor's tools first. Other vendors should work over ONVIF/RTSP but are untested.</p>
+
+<h2 id="screens">How it looks</h2>
+<div class="shots">
+  <div class="chat" aria-label="Telegram camera topic, illustration">
+    <div class="topic"># Yard · camera topic</div>
+    <div class="msg">
+      <img src="assets/event.png" width="480" height="270" alt="Event snapshot: a person on the path inside a detection box">
+      <p>👤 <b>Person detected</b> · Yard · 14:02:19</p>
+    </div>
+    <div class="btns"><span>🎞 Clip around this frame</span><span>📷 Frame</span><span>🎞 Clip 30 s</span><span>🔄 Status</span></div>
+  </div>
+  <div>
+    <p>Every camera gets its own topic. A detection arrives as a snapshot with the box drawn by the detector; the buttons below build a clip around that moment from the buffer, take a fresh frame or show the camera status.</p>
+    <p>The “Control” topic carries the system status, the detector model menu (<code>/model</code>) and per-camera thresholds.</p>
+    <p class="note">The pictures on this page are illustrations: a drawn scene and the bot's real button labels. No footage from real cameras is published here.</p>
+  </div>
+</div>
+
+<h2 id="languages">Languages</h2>
+<p>The bot speaks <b>English</b> and <b>Russian</b> and follows your Telegram language (<code>/lang en|ru</code> to change). More languages are planned.</p>
+
+<h2 id="license">License</h2>
+<p>Dozorcam is <a href="https://github.com/egorchenkov/dozorcam/blob/master/LICENSE">Apache-2.0</a>. The image bundles YOLOX-Tiny (Apache-2.0) and a GPL-3.0-or-later build of FFmpeg — see <a href="https://github.com/egorchenkov/dozorcam/blob/master/THIRD_PARTY.md">THIRD_PARTY.md</a>. YOLOv5/YOLOv8 weights (AGPL-3.0) are not shipped; you can add them yourself.</p>
+<p class="note">A one-person home project, provided as is, without support guarantees.</p>
+</main>
+<footer>Dozorcam · <a href="https://github.com/egorchenkov/dozorcam">GitHub</a> · <a href="ru/" hreflang="ru" lang="ru">Русская версия</a></footer>
+</body>
+</html>

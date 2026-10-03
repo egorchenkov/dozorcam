@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dozorcam"
+dynamic = ["version", "dependencies"]
+description = "Self-hosted camera watcher: ONVIF/RTSP recording buffer, person detection, Telegram forum bot"
+requires-python = ">=3.12"
+
+[project.scripts]
+cctv-bridge = "cctv.cli:bridge"
+cctv-pipeline = "cctv.cli:pipeline"
+cctv-provision = "cctv.cli:provision"
+cctv-rtsp-proxy = "cctv.cli:rtsp_proxy"
+cctv-bot = "cctv.cli:bot"
+cctv-notify = "cctv.cli:notify"
+
+[tool.setuptools.dynamic]
+version = { attr = "cctv.__version__" }
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["cctv*"]
+
+[tool.setuptools.package-data]
+"cctv.i18n" = ["locales/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

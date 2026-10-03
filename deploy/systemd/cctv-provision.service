@@ -1,0 +1,24 @@
+[Unit]
+Description=CCTV registry writer (privileged, unix socket only)
+Documentation=file:/opt/cctv/docs/camera-provisioning.md
+After=network-online.target
+OnFailure=cctv-alert@%N.service
+
+[Service]
+Type=simple
+# Единственная привилегированная часть контура видеонаблюдения: правит реестр
+# камер и перезапускает цепочку. Мост и бот остаются непривилегированными.
+User=root
+Group=cctv
+Environment=CCTV_CONFIG_DIR=/etc/cctv
+ExecStart=/opt/cctv/venv/bin/cctv-provision
+Restart=on-failure
+RestartSec=5
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+ReadWritePaths=/etc/cctv-bridge
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

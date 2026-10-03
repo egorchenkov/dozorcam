@@ -1,0 +1,53 @@
+# /etc/cctv/config.toml — единый конфиг приложения (каталог монтируется только на чтение).
+# Рядом: cameras.json (реестр камер) и secrets.toml (токен бота, 0600).
+# Ключ раздела -> переменная CCTV_<КЛЮЧ>; заданная в окружении переменная сильнее файла.
+# Пути по умолчанию: состояние /var/lib/cctv/state, буфер /var/lib/cctv/buffer (tmpfs);
+# переопределяются CCTV_STATE_DIR / CCTV_BUFFER_DIR, каталог конфига — CCTV_CONFIG_DIR.
+
+[common]
+# Мост и бот на одном узле говорят по loopback без TLS. Разнесённая установка —
+# internal_tls = true и сертификаты ниже (мост: server_*, client_ca; бот: bridge_*).
+# internal_tls = false
+
+[engine]
+# bind = "127.0.0.1"
+# port = 8780
+# events_url = "http://127.0.0.1:8781/v1/events"
+# Детектор и буфер. Порог — в ПРОЦЕНТАХ изменившихся пикселей.
+# motion_threshold = 3
+# buffer_segments = 120          # 120 x 5 c = 10 минут истории для клипа
+# motion_stale_sec = 60          # пульс детектора старше — состояние stalled
+# Гейт людей от самой камеры (ONVIF FieldDetector): off | shadow | enforce.
+human_gate_mode = "shadow"
+# Детектор людей: семейство yolov5 | yolox | yolov8 и файл весов (имя ищется в
+# /etc/cctv/models, затем в /usr/share/cctv/models). Без настройки — YOLOX-Tiny из
+# образа; в образе только он (Apache-2.0), веса YOLOv5/YOLOv8 — свои, docs/models.md.
+# person_model_family = "yolov8"
+# person_model = "yolov8n.onnx"
+# person_confidence = 0.35       # без него — стартовый порог семейства
+# Автокалибровка порога по камере (после смены модели и по «Откалибровать» в боте):
+# person_calibration_frames = 600   # кадров фона на калибровку
+# person_calibration_margin = 0.10  # запас над p99 шума фона
+# С internal_tls = true:
+# server_cert = "/etc/cctv/tls/bridge.crt"
+# server_key = "/etc/cctv/tls/bridge.key"
+# client_ca = "/etc/cctv/tls/ca.crt"
+# events_url = "https://bot.example:8781/v1/events"
+# events_cert = "/etc/cctv/tls/bridge-client.crt"
+# events_key = "/etc/cctv/tls/bridge-client.key"
+# events_ca = "/etc/cctv/tls/ca.crt"
+
+[bot]
+chat_id = -1001234567890          # forum-группа: тема на камеру + «Пульт»
+allowed_user_ids = [123456789]
+# owner_ids = [123456789]         # кому писать в личку об авариях (по умолчанию allowed_user_ids)
+# bridge_url = "http://127.0.0.1:8780"
+# events_port = 8781
+# С internal_tls = true:
+# bridge_url = "https://bridge.example:8780"
+# bridge_client_cert = "/etc/cctv/tls/bot.crt"
+# bridge_client_key = "/etc/cctv/tls/bot.key"
+# bridge_ca = "/etc/cctv/tls/ca.crt"
+# events_cert = "/etc/cctv/tls/bot-events.crt"
+# events_key = "/etc/cctv/tls/bot-events.key"
+# events_client_ca = "/etc/cctv/tls/ca.crt"

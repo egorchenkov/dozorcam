@@ -1,0 +1,25 @@
+# Аварийный голос самого видеонаблюдения: службу уронило — владелец узнаёт об
+# этом от проекта, а не от платформенного бота. Бот читает реестр через мост,
+# поэтому упавший мост он объявить не может (в его журнале остаётся лишь
+# «реестр недоступен»), — эту дыру и закрывает этот юнит.
+#
+# Подключается строкой OnFailure=cctv-alert@%N.service в юнитах цепочки.
+# Пишет владельцу личкой тот же бот (cctv-notify, токен из /etc/cctv/secrets.toml).
+# Пользователь — root: secrets.toml закрыт 0600, а учётке движка токен не нужен.
+[Unit]
+Description=CCTV alarm about failed unit %i
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/cctv/venv/bin/cctv-notify \
+    --text "служба %i не работает (systemd объявил отказ)" \
+    --detail "OnFailure %i; узел %H; смотреть journalctl -u %i"
+TimeoutStartSec=120
+NoNewPrivileges=yes
+PrivateTmp=yes
+Environment=CCTV_CONFIG_DIR=/etc/cctv
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/cctv/state

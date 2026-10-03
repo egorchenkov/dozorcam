@@ -1,0 +1,27 @@
+[Unit]
+Description=CCTV Bridge v1 (loopback; mTLS with CCTV_INTERNAL_TLS=1)
+After=cctv-rtsp-proxy.service
+Requires=cctv-rtsp-proxy.service
+After=network-online.target
+Wants=network-online.target
+OnFailure=cctv-alert@%N.service
+
+[Service]
+Type=simple
+User=cctv
+Group=cctv
+Environment=CCTV_CONFIG_DIR=/etc/cctv
+Environment=CCTV_RUNTIME_CAMERA_CONFIG=/run/cctv/cameras.proxy.json
+ExecStart=/opt/cctv/venv/bin/cctv-bridge
+ExecStartPre=/opt/cctv/scripts/retention-guard.sh check
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/cctv
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,58 @@
+# cctv-tg-bot — изолированный Telegram-интерфейс видеонаблюдения.
+# Системный (не --user) юнит: у сервиса свой пользователь cctvbot, своё
+# состояние и никакого доступа к контурам, proxy и камерным секретам.
+# Установка: cp systemd/cctv-tg-bot.service /etc/systemd/system/
+#            systemctl daemon-reload && systemctl enable --now cctv-tg-bot
+[Unit]
+Description=CCTV Telegram interface (isolated, no LLM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cctvbot
+Group=cctvbot
+# Настройки и токен — каталог /etc/cctv (config.toml, secrets.toml 0600), только чтение.
+# Свой venv приложения: ничьё чужое окружение сервису не нужно.
+Environment=CCTV_CONFIG_DIR=/etc/cctv
+Environment=CCTV_STATE_DIR=/var/lib/cctv/state/bot
+Environment=CCTV_RUNTIME_DIR=/run/cctv-tg-bot
+ExecStart=/opt/cctv/venv/bin/cctv-bot
+WorkingDirectory=/var/lib/cctv/state/bot
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+StateDirectory=cctv/state/bot
+StateDirectoryMode=0700
+RuntimeDirectory=cctv-tg-bot
+RuntimeDirectoryMode=0700
+ReadWritePaths=/var/lib/cctv/state/bot /run/cctv-tg-bot
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+MemoryMax=1G
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,75 @@
+# Dozorcam: docker compose up -d  (настройки — один файл .env рядом, образец .env.example)
+#
+# Оба сервиса в сети хоста: движку она нужна для ONVIF WS-Discovery (multicast) и RTSP
+# к камерам, а мост↔бот без TLS допускаются только по loopback — значит, и бот там же.
+# Порты (мост, приёмник событий бота, RTSP-прокси) задаются в .env: на узле с другой
+# установкой (стенд рядом с продом) их нужно развести.
+#
+# Диск щадим: буфер сегментов и транзит моста — tmpfs с лимитом, логи — stdout
+# (ротация docker), на накопитель пишется только state (тома) и читается конфиг.
+
+x-common: &common
+  image: ${CCTV_IMAGE:-ghcr.io/egorchenkov/dozorcam}:${CCTV_IMAGE_TAG:-latest}
+  network_mode: host
+  init: true
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options:
+      max-size: ${CCTV_LOG_MAX_SIZE:-10m}
+      max-file: "${CCTV_LOG_MAX_FILE:-3}"
+
+services:
+  engine:
+    <<: *common
+    build: .
+    command: ["engine"]
+    environment:
+      CCTV_PORT: ${CCTV_BRIDGE_PORT:-8780}
+      CCTV_EVENTS_URL: http://127.0.0.1:${CCTV_EVENTS_PORT:-8781}/v1/events
+      CCTV_RTSP_PROXY_PORT: ${CCTV_RTSP_PROXY_PORT:-28554}
+      CCTV_HUMAN_GATE_MODE: ${CCTV_HUMAN_GATE_MODE:-shadow}
+      CCTV_DISCOVERY_NETWORKS: ${CCTV_DISCOVERY_NETWORKS:-}
+      # Лимиты под tmpfs ниже: буфер — НА КАМЕРУ (и на детекторный поток), бюджет — на всё.
+      CCTV_BUFFER_MAX_BYTES: ${CCTV_BUFFER_MAX_BYTES:-419430400}
+      CCTV_MAX_TOTAL_BYTES: ${CCTV_STORAGE_BUDGET_BYTES:-2684354560}
+      CCTV_STORAGE_BUDGET_BYTES: ${CCTV_STORAGE_BUDGET_BYTES:-2684354560}
+      CCTV_MIN_FREE_BYTES: ${CCTV_MIN_FREE_BYTES:-67108864}
+    volumes:
+      - ${CCTV_CONFIG_PATH:-./config}:/etc/cctv:ro
+      - engine-state:/var/lib/cctv/state
+    tmpfs:
+      - /var/lib/cctv/buffer:size=${CCTV_BUFFER_TMPFS:-2g},uid=10001,gid=10001,mode=0700
+      - /var/lib/cctv/spool:size=${CCTV_SPOOL_TMPFS:-512m},uid=10001,gid=10001,mode=0700
+      - /run/cctv:size=8m,uid=10001,gid=10001,mode=0700
+      - /tmp:size=64m,mode=1777
+
+  bot:
+    <<: *common
+    command: ["bot"]
+    depends_on:
+      engine:
+        condition: service_started
+    # Токен и chat/allowed — из того же .env; движку токен не передаётся.
+    environment:
+      CCTV_BOT_TOKEN: ${CCTV_BOT_TOKEN:-}
+      CCTV_CHAT_ID: ${CCTV_CHAT_ID:-}
+      CCTV_ALLOWED_USER_IDS: ${CCTV_ALLOWED_USER_IDS:-}
+      CCTV_OWNER_IDS: ${CCTV_OWNER_IDS:-}
+      CCTV_BRIDGE_URL: http://127.0.0.1:${CCTV_BRIDGE_PORT:-8780}
+      CCTV_EVENTS_PORT: ${CCTV_EVENTS_PORT:-8781}
+    volumes:
+      - ${CCTV_CONFIG_PATH:-./config}:/etc/cctv:ro
+      - bot-state:/var/lib/cctv/state
+    # /run/cctv бота — каталог загрузок: клип от моста (до CCTV_MAX_CLIP_BYTES, 48 МиБ)
+    # качается сюда целиком перед отправкой, так что 8 МиБ, как у движка, не хватает.
+    tmpfs:
+      - /run/cctv:size=${CCTV_BOT_RUNTIME_TMPFS:-128m},uid=10001,gid=10001,mode=0700
+      - /tmp:size=64m,mode=1777
+
+volumes:
+  engine-state:
+  bot-state:

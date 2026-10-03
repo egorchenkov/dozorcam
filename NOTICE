@@ -1,0 +1,7 @@
+Dozorcam
+Copyright 2026 Roman Egorchenkov
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The container image also contains third-party software under its own licenses,
+including a GPL-3.0-or-later build of FFmpeg; see THIRD_PARTY.md.

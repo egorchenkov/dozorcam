@@ -1,0 +1,5 @@
+# Версии — как в боевых окружениях движка и бота на 02.10.2026.
+numpy==2.5.2
+opencv-python-headless==5.0.0.93
+httpx==0.28.1
+python-telegram-bot==22.7
