@@ -169,6 +169,19 @@ class Bridge:
     def scan_status(self, scan_id: str) -> dict:
         return self._json("GET", f"/v1/discovery/scans/{urllib.parse.quote(scan_id)}")
 
+    def activation_start(self, hosts: list[str], password: str | None = None) -> dict:
+        """Активация новых Hikvision. Без пароля — его генерирует мост, и до
+        показа владельцу он через бота не идёт."""
+        body: dict = {"hosts": list(hosts)}
+        if password is None:
+            body["generate"] = True
+        else:
+            body["password"] = password
+        return self._json("POST", "/v1/activations", json=body)
+
+    def activation_status(self, activation_id: str) -> dict:
+        return self._json("GET", f"/v1/activations/{urllib.parse.quote(activation_id)}")
+
     def probe(self, host: str, username: str, password: str, detect_url: str = "") -> dict:
         body = {"host": host, "username": username, "password": password}
         if detect_url:

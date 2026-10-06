@@ -110,6 +110,68 @@ class RecordedMainStreamTest(unittest.TestCase):
             expected = cctv_pipeline.segment_started_at(self.target / "2026-09-02T18:00:05Z.ts") + 3.5
             self.assertEqual(stream.frame_captured_at, expected)
 
+    def read_through(self, stream, name):
+        """Разобрать сегмент до конца: кадр, затем конец файла."""
+        self.assertEqual(stream.read(), ("main-frame", False))
+        self.assertEqual(stream.read(), (None, False))
+        self.assertEqual(FakeCapture.opened[-1], str(self.target / name))
+
+    def test_buffer_overtaking_the_cursor_is_logged_and_marks_detector_behind(self):
+        """D-20261003-01: буфер удалял неразобранные сегменты, курсор молча
+        перепрыгивал, а в журнале и статусе не было ни следа перегруза."""
+        write(self.target, "2026-09-02T18:00:00Z.ts")
+        stream = self.stream()
+        with patch.object(cctv_pipeline.cv2, "VideoCapture", FakeCapture):
+            stream.read()
+            write(self.target, "2026-09-02T18:00:05Z.ts")
+            write(self.target, "2026-09-02T18:00:10Z.ts")
+            self.read_through(stream, "2026-09-02T18:00:05Z.ts")
+            self.assertFalse(stream.behind())
+            # Детектор отстал: буфер удалил 18:00:00…18:00:15, осталось с 18:00:20.
+            for name in ("2026-09-02T18:00:00Z.ts", "2026-09-02T18:00:05Z.ts", "2026-09-02T18:00:10Z.ts"):
+                (self.target / name).unlink()
+            write(self.target, "2026-09-02T18:00:20Z.ts")
+            write(self.target, "2026-09-02T18:00:25Z.ts")
+            with mock.patch("builtins.print") as out:
+                self.assertEqual(stream.read(), ("main-frame", False))
+            self.assertEqual(FakeCapture.opened[-1], str(self.target / "2026-09-02T18:00:20Z.ts"))
+            line = out.call_args[0][0]
+            self.assertIn("detector_skipped_segments camera=cam count=2", line)
+            self.assertIn("total=2", line)
+            self.assertTrue(stream.behind())
+            with mock.patch.object(cctv_pipeline, "DETECTOR_BEHIND_HOLD_SEC", 0):
+                self.assertFalse(stream.behind())
+
+    def test_deleting_only_the_parsed_segment_is_not_a_skip(self):
+        write(self.target, "2026-09-02T18:00:00Z.ts")
+        stream = self.stream()
+        with patch.object(cctv_pipeline.cv2, "VideoCapture", FakeCapture):
+            stream.read()
+            write(self.target, "2026-09-02T18:00:05Z.ts")
+            write(self.target, "2026-09-02T18:00:10Z.ts")
+            self.read_through(stream, "2026-09-02T18:00:05Z.ts")
+            (self.target / "2026-09-02T18:00:00Z.ts").unlink()
+            (self.target / "2026-09-02T18:00:05Z.ts").unlink()
+            write(self.target, "2026-09-02T18:00:15Z.ts")
+            with mock.patch("builtins.print") as out:
+                self.assertEqual(stream.read(), ("main-frame", False))
+            out.assert_not_called()
+            self.assertEqual(stream.skipped_segments, 0)
+            self.assertFalse(stream.behind())
+
+
+class PersonGateDefaultTest(unittest.TestCase):
+    def test_default_is_enforce(self):
+        """D-20261003-01: shadow по умолчанию гонял YOLO на каждом кадре (~10x CPU)."""
+        import subprocess
+
+        # Отдельный процесс: reload модуля подменил бы классы под другими тестами.
+        env = {k: v for k, v in os.environ.items() if k != "CCTV_PERSON_GATE_MODE"}
+        out = subprocess.run([sys.executable, "-c", "from cctv.engine import cctv_pipeline as p; "
+                              "print(p.PERSON_GATE_MODE)"], env=env, capture_output=True,
+                             text=True, check=True, cwd=pathlib.Path(__file__).resolve().parents[2])
+        self.assertEqual("enforce", out.stdout.strip())
+
 
 class FakeProcess:
     def __init__(self, stop_on: str) -> None:

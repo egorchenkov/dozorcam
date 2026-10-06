@@ -262,6 +262,11 @@ class FlowTest(unittest.IsolatedAsyncioTestCase):
         await self.bot.refresh_panel("city")
         self.assertIn("🔴 детектор не отвечает", self.panel_texts()[-1])
 
+        self.motion_health = {"state": "behind", "reason": "detector_skipped_segments",
+                              "last_motion_at": "2026-08-24T10:00:00Z"}
+        await self.bot.refresh_panel("city")
+        self.assertIn("🟡 детектор не успевает", self.panel_texts()[-1])
+
     async def test_fresh_frames_alone_do_not_redraw_the_panel(self):
         """Кадры идут постоянно, и панель, привязанная к их метке, правилась
         каждую минуту: тема всплывала у владельца как новое событие.

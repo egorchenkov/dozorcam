@@ -26,6 +26,8 @@ _MOTION_TOPICS = ("MotionAlarm", "CellMotionDetector", "FieldDetector")
 _NOTIFICATION_SPLIT = re.compile(r"<[\w]+:NotificationMessage>")
 _TRUE_ITEM = re.compile(r'Name="Is(?:Motion|Inside)"\s+Value="true"')
 _STATE_ITEM = re.compile(r'Name="Is(?:Motion|Inside)"\s+Value="(true|false)"')
+_KEY_ITEM = re.compile(r'Name="(Rule|ObjectId|VideoSourceConfigurationToken)"\s+Value="([^"]*)"')
+_PROPERTY_OPERATION = re.compile(r'PropertyOperation="(\w+)"')
 _SUBSCRIPTION_ADDRESS = re.compile(r"<[^>]*Address[^>]*>(http[^<]+)<")
 
 
@@ -88,6 +90,24 @@ def motion_states(pull_response: str, topics: tuple[str, ...] = _MOTION_TOPICS) 
     return states
 
 
+def state_messages(pull_response: str, topics: tuple[str, ...] = _MOTION_TOPICS) -> list[tuple[str, bool, str]]:
+    """Как ``motion_states``, но с ключом цели: (правило/ObjectId, активно, операция).
+
+    FieldDetector Hikvision шлёт IsInside отдельно на каждую цель (ObjectId) —
+    две цели в кадре дают два true в одну секунду. Без ключа inactive одной цели
+    закрыл бы интервал, пока вторая ещё в зоне.
+    """
+    messages = []
+    for block in _NOTIFICATION_SPLIT.split(pull_response)[1:]:
+        if any(topic in block for topic in topics):
+            found = _STATE_ITEM.search(block)
+            if found:
+                key = "/".join(value for _, value in _KEY_ITEM.findall(block))
+                operation = _PROPERTY_OPERATION.search(block)
+                messages.append((key, found.group(1) == "true", operation.group(1) if operation else ""))
+    return messages
+
+
 class OnvifMotionGate:
     """Журнал моментов, когда камера сама видела движение.
 
@@ -107,7 +127,8 @@ class OnvifMotionGate:
 
     def __init__(self, camera_id: str, events_url: str, user: str, password: str,
                  hold_seconds: float = 20.0, remember_seconds: float = 900.0,
-                 topics: tuple[str, ...] = _MOTION_TOPICS, label: str = "onvif_gate") -> None:
+                 topics: tuple[str, ...] = _MOTION_TOPICS, label: str = "onvif_gate",
+                 state_cap_seconds: float = 300.0) -> None:
         self.camera_id = camera_id
         self.events_url = events_url
         self.user, self.password = user, password
@@ -125,6 +146,13 @@ class OnvifMotionGate:
         # Журнал смен состояния (момент, активно) — для телеметрии «по состоянию»,
         # решений гейта не касается.
         self._states: collections.deque[tuple[float, bool]] = collections.deque()
+        # Цели «в зоне» (ключ → момент последнего true). inactive по ONVIF приходит
+        # не всегда: 03–04.10.2026 у прода интервал не закрылся ни разу за 30+ ч,
+        # хотя Initialized false при переподписке приходил. Поэтому цель без
+        # подтверждения дольше state_cap_seconds считается ушедшей (камера держит
+        # active…inactive p50 47 с, max 264 с — по ISAPI 28.09–02.10).
+        self._active_keys: dict[str, float] = {}
+        self.state_cap_seconds = state_cap_seconds
 
     def start(self) -> None:
         threading.Thread(target=self._run, daemon=True).start()
@@ -150,33 +178,66 @@ class OnvifMotionGate:
             self._motion_count += 1
             self._prune(moment)
 
-    def note_state(self, active: bool, at: float | None = None) -> None:
+    def note_state(self, active: bool, at: float | None = None, key: str = "") -> None:
+        """Смена состояния цели ``key``; в журнал идёт агрегат «есть ли кто в зоне».
+
+        Каждый true пишется (он продлевает интервал), false — только когда зона
+        опустела. Пустой ключ — старое поведение без ключей (тесты, VMD).
+        """
         moment = time.time() if at is None else at
         with self._lock:
-            self._states.append((moment, active))
+            stale = moment - self.state_cap_seconds
+            for old_key in [k for k, seen in self._active_keys.items() if seen < stale]:
+                del self._active_keys[old_key]
+            if active:
+                self._active_keys[key] = moment
+                self._states.append((moment, True))
+            else:
+                self._active_keys.pop(key, None)
+                if not self._active_keys:
+                    self._states.append((moment, False))
             cutoff = moment - self.remember_seconds
             # Последнюю запись до границы оставляем: она задаёт состояние на границе.
             while len(self._states) > 1 and self._states[1][0] < cutoff:
                 self._states.popleft()
 
+    def reset_state(self, at: float | None = None) -> None:
+        """Новая подписка: камера заново пришлёт Initialized по текущим целям,
+        а цели старой подписки, не дождавшиеся inactive, забываются."""
+        moment = time.time() if at is None else at
+        with self._lock:
+            if self._active_keys:
+                self._active_keys.clear()
+                self._states.append((moment, False))
+
     def state_active_near(self, shot: float, margin: float = 60.0) -> bool:
         """Был ли кадр внутри интервала active…inactive камеры (±margin).
 
-        Незакрытый интервал (inactive не пришёл) тянется до «сейчас». Пока
-        подписка не поднялась — True, как и в остальных ответах гейта.
+        Интервал без inactive тянется не дальше state_cap_seconds после
+        последнего true, а не «до сейчас»: иначе одно потерянное inactive
+        превращает всю дальнейшую телеметрию в 100 % «камера видит».
+        Пока подписка не поднялась — True, как и в остальных ответах гейта.
         """
         with self._lock:
             if not self._healthy:
                 return True
-            start = None
+            start = last_true = None
             for moment, active in self._states:
-                if active and start is None:
-                    start = moment
-                elif not active and start is not None:
+                if start is not None and moment - last_true > self.state_cap_seconds:
+                    if start - margin <= shot <= last_true + self.state_cap_seconds + margin:
+                        return True
+                    start = None
+                if active:
+                    if start is None:
+                        start = moment
+                    last_true = moment
+                elif start is not None:
                     if start - margin <= shot <= moment + margin:
                         return True
                     start = None
-            return start is not None and shot >= start - margin
+            if start is None:
+                return False
+            return start - margin <= shot <= last_true + self.state_cap_seconds + margin
 
     def _prune(self, reference: float) -> None:
         cutoff = reference - self.remember_seconds
@@ -216,6 +277,7 @@ class OnvifMotionGate:
         if not match:
             raise RuntimeError("no_subscription_address")
         address = match.group(1)
+        self.reset_state()
         with self._lock:
             self._healthy = True
         print(f"{self.label}_subscribed camera={self.camera_id} topics={','.join(self.topics)}", flush=True)
@@ -230,8 +292,9 @@ class OnvifMotionGate:
                 "<Timeout>PT30S</Timeout><MessageLimit>50</MessageLimit></PullMessages>"
             )
             response = soap_call(address, self.user, self.password, pull_body, header, timeout=40)
-            for active in motion_states(response, self.topics):
-                self.note_state(active)
+            for key, active, operation in state_messages(response, self.topics):
+                self.note_state(active, key=key)
+                print(f"{self.label}_state camera={self.camera_id} key={key} active={int(active)} op={operation}", flush=True)
             if has_active_motion(response, self.topics):
                 self.note_motion()
                 print(f"{self.label}_motion camera={self.camera_id} total={self.motion_count}", flush=True)

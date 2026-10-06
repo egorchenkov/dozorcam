@@ -172,7 +172,7 @@ def segment_command(source: str, target: pathlib.Path, audio: bool = True,
         sound = ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "48k"] if audio else ["-an"]
     command = ["ffmpeg", "-nostdin", "-loglevel", "error", *transport, "-i", source,
                "-map", "0:v:0", *sound, "-c:v", "copy",
-               "-f", "segment", "-segment_time", "5", "-strftime", "1", "-reset_timestamps", "1",
+               "-f", "segment", "-segment_time", f"{RECORDED_SEGMENT_SEC:g}", "-strftime", "1", "-reset_timestamps", "1",
                str(target / "%Y-%m-%dT%H:%M:%SZ.ts")]
     # TZ=UTC обязателен: ffmpeg -strftime пишет ЛОКАЛЬНОЕ время, а clip() читает имя
     # сегмента как UTC — без этого окно ±15 с всегда пустое и клип не собирается.
@@ -270,7 +270,10 @@ HUMAN_GATE_STATE_MARGIN_SEC = float(os.environ.get("CCTV_HUMAN_GATE_STATE_MARGIN
 # ~80 мс YOLO, не зависит ни от вендора, ни от настроек камеры, и это ровно тот
 # алгоритм, который был штатным детектором движения до пилота людей. ONVIF-гейт
 # выше может гейт только ОТКРЫТЬ, закрыть — никогда.
-PERSON_GATE_MODE = os.environ.get("CCTV_PERSON_GATE_MODE", "shadow")
+# Умолчание enforce (D-20261003-01): в shadow гейт только считает решение, а YOLO
+# идёт на каждом выбранном кадре — 4 камеры × 2 к/с ≈ 2.5 ядра против ~0.23 в
+# enforce. shadow остаётся режимом диагностики цены гейта.
+PERSON_GATE_MODE = os.environ.get("CCTV_PERSON_GATE_MODE", "enforce")
 # Порог намеренно много ниже тревожных (1 % у городской камеры, 2 % на даче): гейт
 # обязан быть щедрым — пропустить кадр на YOLO дешевле, чем потерять человека.
 # Значение уточняется по diff_stats на main-кадрах, см. журнал gate_stats.
@@ -310,6 +313,11 @@ PERSON_HITS = int(os.environ.get("CCTV_PERSON_HITS", "2"))
 # следующего, значит сегмент готов тогда, когда есть более новый по имени.
 # Выдержка осталась только как страховка от гонки на самом создании файла.
 RECORDED_SEGMENT_SETTLE_SEC = float(os.environ.get("CCTV_RECORDED_SEGMENT_SETTLE_SEC", "1"))
+# Длина сегмента рекордера (-segment_time в segment_command).
+RECORDED_SEGMENT_SEC = 5.0
+# Сколько после пропуска сегментов детектор считается «не успевает» (D-20261003-01):
+# буфер удалил сегменты раньше, чем детектор до них дошёл, — часть видео не просмотрена.
+DETECTOR_BEHIND_HOLD_SEC = float(os.environ.get("CCTV_DETECTOR_BEHIND_HOLD_SEC", "600"))
 # Одного кадра в секунду недостаточно для короткого прохода: при 25 fps легко
 # выбрать начало и конец силуэта, но не кадр с уверенностью > порога. Два
 # кадра/с оставляют несколько подтверждений на проход (человек в кадре
@@ -451,11 +459,18 @@ class RecordedMainStream:
 
     def __init__(self, storage: pathlib.Path, camera: Camera) -> None:
         self.target = settings.engine_buffer(storage) / detect_buffer_name(camera)
+        self.camera_id = camera.camera_id
         self.capture = None
         self.current: pathlib.Path | None = None
         self.last_segment: str | None = None
         self.initialized = False
         self.frame_stride = 1
+        self.skipped_segments = 0
+        self.skipped_at: float | None = None
+
+    def behind(self) -> bool:
+        """Детектор недавно терял сегменты: буфер обогнал курсор разбора."""
+        return self.skipped_at is not None and time.time() - self.skipped_at < DETECTOR_BEHIND_HOLD_SEC
 
     @property
     def current_started_at(self) -> float | None:
@@ -513,6 +528,7 @@ class RecordedMainStream:
         pending = [path for path in ready if self.last_segment is None or path.name > self.last_segment]
         if not pending:
             return False
+        self._note_skipped(pending[0])
         self.current = pending[0]
         self.capture = cv2.VideoCapture(str(self.current))
         if not self.capture.isOpened():
@@ -521,6 +537,34 @@ class RecordedMainStream:
         fps = self.capture.get(cv2.CAP_PROP_FPS) or RECORDED_PERSON_FPS
         self.frame_stride = max(1, round(fps / RECORDED_PERSON_FPS))
         return True
+
+    def _note_skipped(self, following: pathlib.Path) -> None:
+        """Журнал тихой потери видео (D-20261003-01).
+
+        Курсор разбора — имя последнего разобранного сегмента. Если самый старый
+        сегмент буфера уже новее курсора, буфер удалил промежуточные раньше, чем
+        детектор до них дошёл: они не просмотрены. Число — оценка по именам
+        (= времени съёмки), разрыв записи у камеры в тот же момент её завышает.
+        """
+        if self.last_segment is None:
+            return
+        existing = self._segments()
+        if not existing or existing[0].name <= self.last_segment:
+            return
+        previous = segment_started_at(self.target / self.last_segment)
+        started = segment_started_at(following)
+        if previous is None or started is None:
+            return
+        # Сам разобранный сегмент буфер удаляет первым — это ещё не потеря;
+        # потеря — когда исчез и следующий за ним.
+        count = round((started - previous) / RECORDED_SEGMENT_SEC) - 1
+        if count < 1:
+            return
+        lag = f" lag={time.time() - started:.0f}s"
+        self.skipped_segments += count
+        self.skipped_at = time.time()
+        print(f"detector_skipped_segments camera={self.camera_id} count={count}{lag} "
+              f"total={self.skipped_segments}", flush=True)
 
     def _finish_segment(self) -> None:
         if self.capture is not None:
@@ -739,6 +783,13 @@ def detect(camera: Camera, bridge: Bridge) -> None:
     still = StillObjectFilter()
     still_suppressed, still_logged_at = 0, 0.0
     hit_scores: list[float] = []  # оценки кадров текущей серии — слабейший из них идёт в калибровку
+
+    def watching(reason: str) -> tuple[str, str]:
+        # Пропуск сегментов виден в статусе, а не только в журнале: перегруз иначе незаметен.
+        if recorded_stream is not None and recorded_stream.behind():
+            return "behind", "detector_skipped_segments"
+        return "watching", reason
+
     while True:
       # Поток обязан пережить любой сбой одной итерации: его смерть — слепой детектор
       # до рестарта юнита, а наружу об этом говорил только протухший пульс.
@@ -749,7 +800,7 @@ def detect(camera: Camera, bridge: Bridge) -> None:
             frame, fresh = recorded_stream.read()
             if frame is None:
                 if time.time() - beat_at >= HEARTBEAT_INTERVAL_SEC:
-                    write_heartbeat(storage, camera.camera_id, "watching", "waiting_for_recorded_main", last_motion_at)
+                    write_heartbeat(storage, camera.camera_id, *watching("waiting_for_recorded_main"), last_motion_at)
                     beat_at = time.time()
                 time.sleep(0.25)
                 continue
@@ -852,7 +903,7 @@ def detect(camera: Camera, bridge: Bridge) -> None:
                 gate_skipped += 1
                 remember_noise(gate_noise, diff_score, False)
                 if time.time() - beat_at >= HEARTBEAT_INTERVAL_SEC:
-                    write_heartbeat(storage, camera.camera_id, "watching", skip_reason, last_motion_at)
+                    write_heartbeat(storage, camera.camera_id, *watching(skip_reason), last_motion_at)
                     beat_at = time.time()
                 time.sleep(0 if recorded_stream is not None else PERSON_DETECT_INTERVAL)
                 continue
@@ -984,7 +1035,7 @@ def detect(camera: Camera, bridge: Bridge) -> None:
                 diff_window = []
                 window, last_stats = [], time.time()
             if time.time() - beat_at >= HEARTBEAT_INTERVAL_SEC:
-                write_heartbeat(storage, camera.camera_id, "watching", "person_detector", last_motion_at)
+                write_heartbeat(storage, camera.camera_id, *watching("person_detector"), last_motion_at)
                 beat_at = time.time()
             # Файловый main-поток не держит камеру: его можно читать настолько
             # быстро, насколько успевает модель. RTSP/substream сохраняет

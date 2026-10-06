@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 # 554 — RTSP, остальные — типовые порты веб-интерфейса и ONVIF-службы устройств.
 SCAN_PORTS = (554, 80, 8000, 8899, 8080)
 ONVIF_PORTS = (80, 8000, 8899, 8080, 5000)
+# Где спрашивать у Hikvision состояние активации (без пароля).
+ACTIVATION_WEB_PORTS = (80, 8080)
 ONVIF_PATHS = ("/onvif/device_service", "/onvif/device", "/onvif/Device", "/onvif/services")
 # Развёртка сети — не инструмент разведки: сети только приватные и не крупнее
 # /20, иначе одна опечатка в конфиге превращала бы мост в сканер интернета.
@@ -97,6 +99,13 @@ class Candidate:
     model: str = ""
     onvif_url: str = ""
     rtsp_banner: str = ""
+    # Без пароля: None — не знаем, False — новая, ждёт первого пароля.
+    # activation: "v3"/"legacy" — Hikvision, бот активирует сам; "manual" —
+    # марка без автоактивации: камера ждёт настройки или отвечает одним
+    # веб-интерфейсом (ни RTSP, ни ONVIF) — бот покажет инструкцию по марке.
+    activated: bool | None = None
+    activation: str = ""
+    brand: str = ""  # марка для инструкции (vendor_setup.BRAND_HINTS)
 
     def label(self) -> str:
         name = " ".join(p for p in (self.vendor, self.model) if p).strip()
@@ -104,7 +113,9 @@ class Candidate:
 
     def as_dict(self) -> dict:
         return {"host": self.host, "ports": sorted(self.ports), "vendor": self.vendor,
-                "model": self.model, "onvif": bool(self.onvif_url), "label": self.label()}
+                "model": self.model, "onvif": bool(self.onvif_url), "label": self.label(),
+                "activated": self.activated, "activation": self.activation,
+                "brand": self.brand}
 
 
 @dataclass
@@ -212,10 +223,11 @@ def _port_open(host: str, port: int, timeout: float) -> bool:
 
 def scan(networks, *, ports: tuple[int, ...] = SCAN_PORTS, timeout: float = SCAN_TIMEOUT,
          workers: int = 96, extra_hosts: list[str] | None = None) -> list[Candidate]:
-    """Кандидаты — адреса с открытым RTSP или откликнувшейся службой ONVIF.
+    """Кандидаты — адреса с открытым RTSP, откликнувшейся службой ONVIF или
+    неактивированная Hikvision (у новой нет ни того, ни другого до пароля).
 
-    `extra_hosts` — ответившие на WS-Discovery: их опрашиваем, даже если они
-    вне развёртки (другая подсеть той же LAN).
+    `extra_hosts` — ответившие на WS-Discovery/SADP: их опрашиваем, даже если
+    они вне развёртки (другая подсеть той же LAN).
     """
     nets = parse_networks(networks) if isinstance(networks, (str, list)) else networks
     targets = [str(ip) for net in nets
@@ -236,7 +248,8 @@ def scan(networks, *, ports: tuple[int, ...] = SCAN_PORTS, timeout: float = SCAN
     candidates = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
         for candidate in pool.map(lambda c: identify(c, timeout=timeout), found.values()):
-            if 554 in candidate.ports or candidate.onvif_url:
+            if (554 in candidate.ports or candidate.onvif_url or candidate.activated is not None
+                    or candidate.activation):
                 candidates.append(candidate)
     candidates.sort(key=lambda c: tuple(int(part) for part in c.host.split(".")))
     return candidates
@@ -267,7 +280,47 @@ def identify(candidate: Candidate, *, timeout: float = SCAN_TIMEOUT) -> Candidat
         if needle in hint:
             candidate.vendor = vendor
             break
+    web = next((port for port in ACTIVATION_WEB_PORTS if port in candidate.ports), None)
+    if web is not None and candidate.vendor in ("", "hikvision"):
+        # /SDK/activateStatus отвечает без пароля и только у Hikvision: так
+        # видна новая камера, которой ещё нечем пустить нас в ONVIF и RTSP.
+        from . import hikvision_activation as hik
+
+        status = hik.activation_status(f"http://{candidate.host}:{web}", timeout=timeout)
+        if status.activated is not None:
+            candidate.vendor = candidate.brand = "hikvision"
+            candidate.activated, candidate.activation = status.activated, status.protocol
+    if candidate.activated is None:
+        try:
+            _identify_brand(candidate, web, timeout=timeout)
+        except Exception:  # чужая прошивка не должна ронять опрос сети
+            pass
     return candidate
+
+
+def _identify_brand(candidate: Candidate, web: int | None, *, timeout: float) -> None:
+    """Марка и «ждёт настройки» для тех, кого не опознала ветка Hikvision.
+
+    Только то, что камера отдаёт без пароля; входа не пробуем (см. vendor_setup)."""
+    from . import vendor_setup
+
+    base = f"http://{candidate.host}:{web}" if web is not None else ""
+    page = vendor_setup.web_fingerprint(base, timeout=timeout) if base else ""
+    brand = vendor_setup.brand_from_text(candidate.rtsp_banner, page)
+    if not brand:
+        return
+    candidate.brand = brand
+    candidate.vendor = candidate.vendor or brand
+    if brand in vendor_setup.AUTO_ACTIVATION:
+        return
+    state = vendor_setup.needs_setup(brand, base, timeout=timeout) if base else None
+    if state is not None:
+        candidate.activated = not state
+    # Одна веб-морда без RTSP и ONVIF у камеры известной марки — почти всегда
+    # новая, ещё без пароля (потоки поднимаются после настройки).
+    web_only = 554 not in candidate.ports and not candidate.onvif_url
+    if state is True or (state is None and web_only):
+        candidate.activation = "manual"
 
 
 def rtsp_banner(host: str, port: int = 554, *, timeout: float = SCAN_TIMEOUT) -> str:
@@ -532,9 +585,11 @@ def _probe_onvif(detected: Detected, service: str, user: str, password: str,
                 xaddr = node.findtext("tt:XAddr", default="", namespaces=NS)
                 if xaddr:
                     # XAddr нередко приходит с внутренним адресом устройства —
-                    # доверяем только хосту, к которому уже достучались.
+                    # доверяем только хосту, к которому уже достучались; порт без
+                    # явного в XAddr — тот же, что у службы, ответившей нам.
                     parts = urllib.parse.urlsplit(xaddr)
-                    port = f":{parts.port}" if parts.port else ""
+                    port = parts.port or urllib.parse.urlsplit(service).port
+                    port = f":{port}" if port else ""
                     media = urllib.parse.urlunsplit(
                         ("http", f"{detected.host}{port}", parts.path, "", ""))
                 break

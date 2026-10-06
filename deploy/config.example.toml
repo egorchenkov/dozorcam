@@ -17,6 +17,9 @@
 # motion_threshold = 3
 # buffer_segments = 120          # 120 x 5 c = 10 минут истории для клипа
 # motion_stale_sec = 60          # пульс детектора старше — состояние stalled
+# Гейт кадров перед YOLO (frame-diff): enforce | shadow. shadow гоняет YOLO на каждом
+# кадре (~10x CPU) и нужен только для диагностики гейта.
+# person_gate_mode = "enforce"
 # Гейт людей от самой камеры (ONVIF FieldDetector): off | shadow | enforce.
 human_gate_mode = "shadow"
 # Детектор людей: семейство yolov5 | yolox | yolov8 и файл весов (имя ищется в

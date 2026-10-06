@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import pathlib
@@ -34,6 +35,7 @@ except ImportError:  # Detector can fall back to snapshots when OpenCV is absent
 
 from .. import settings
 from . import camera_discovery as discovery
+from . import hikvision_activation as hik
 from . import model_switch
 from . import threshold_calibration
 
@@ -48,6 +50,16 @@ CAMERA_ACTIONS = {"pause", "resume", "retire", "rename"}
 # бот получает непрозрачный токен и второй раз пароль не присылает.
 PROBE_TTL_SECONDS = 900
 SCAN_TTL_SECONDS = 900
+# Активация новых Hikvision: пакет не больше этого, задание живёт как поиск.
+# Пароль admin, заданный камерам, сперва ложится в хранилище state (0600) и
+# только потом уходит в сеть: частичный сбой пакета не должен оставить камеру
+# с паролем, которого никто не знает (урок самоблокировки 28.08.2026).
+ACTIVATION_MAX_HOSTS = 16
+ACTIVATION_TTL_SECONDS = 1800
+ACTIVATION_VAULT = "activation-vault.json"
+# ONVIF после включения поднимается не мгновенно: проба потока — с паузами.
+ACTIVATION_PROBE_ATTEMPTS = 3
+ACTIVATION_PROBE_PAUSE_SEC = 3.0
 PROVISION_SOCKET = os.environ.get("CCTV_PROVISION_SOCKET", "/run/cctv-provision.sock")
 DISCOVERY_NETWORKS = os.environ.get("CCTV_DISCOVERY_NETWORKS", "")
 STORAGE_BUDGET_BYTES = int(os.environ.get("CCTV_STORAGE_BUDGET_BYTES", str(8 * 1024 ** 3)))
@@ -165,6 +177,9 @@ class Bridge:
         # процесса, а не диска. Перезапуск моста их обнуляет, и это правильно.
         self._scans: dict[str, dict] = {}
         self._probes: dict[str, tuple[float, dict, dict]] = {}
+        self._activations: dict[str, dict] = {}
+        self.activation_port = 80  # ISAPI камеры; тесты подменяют на порт эмулятора
+        self.activation_keys = hik.KeyCache  # фабрика RSA-ключей на пакет
         self.networks = DISCOVERY_NETWORKS
         self.provision_socket = PROVISION_SOCKET
         registry = os.environ.get("CCTV_REGISTRY_FILE")
@@ -375,7 +390,10 @@ class Bridge:
 
         def worker() -> None:
             try:
-                found = discovery.scan(parsed, extra_hosts=discovery.ws_discover())
+                extra = discovery.ws_discover()
+                # SADP слышит и новую Hikvision, у которой ONVIF ещё выключен.
+                extra += [host for host in hik.sadp_discover() if host not in extra]
+                found = discovery.scan(parsed, extra_hosts=extra)
                 result = {"status": "done", "candidates": [c.as_dict() for c in found]}
             except Exception as exc:  # опрос сети не должен ронять мост
                 result = {"status": "failed", "candidates": [],
@@ -442,12 +460,193 @@ class Bridge:
             entry["snapshot_url"] = found.snapshot_url
             entry["snapshot_user"] = username
             entry["snapshot_password"] = password
-        token = secrets.token_urlsafe(16)
         summary = found.summary()
+        token = self._remember_probe(entry, summary)
+        return {"ok": True, "probe_token": token, "summary": summary}
+
+    def _remember_probe(self, entry: dict, summary: dict) -> str:
+        token = secrets.token_urlsafe(16)
         with self._lock:
             self._probes = {t: v for t, v in self._probes.items() if v[0] > time.time()}
             self._probes[token] = (time.time() + PROBE_TTL_SECONDS, entry, summary)
-        return {"ok": True, "probe_token": token, "summary": summary}
+        return token
+
+    # --- активация новых Hikvision -------------------------------------------
+    @property
+    def activation_vault(self) -> pathlib.Path:
+        return self.state_dir / ACTIVATION_VAULT
+
+    def _vault_put(self, host: str, **fields) -> None:
+        """Записать пароль камеры на диск ДО сетевого вызова (0600, атомарно).
+
+        Файл — запасной ключ владельца: бот показывает пароль один раз, а
+        камеру с потерянным паролем вернуть можно только сбросом кнопкой.
+        """
+        with self._lock:
+            path = self.activation_vault
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                data = {}
+            hosts = data.setdefault("hosts", {})
+            record = hosts.setdefault(host, {})
+            record.update(fields, updated=now())
+            tmp = path.with_name(path.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=1)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+
+    def start_activation(self, request: dict) -> dict:
+        """Пакетная активация: задание фоном, бот опрашивает его как поиск.
+
+        Пароль — от владельца (проверен по правилам Hikvision) или генерируется
+        здесь, в мосте, чтобы не ходить через чат ни разу до показа владельцу.
+        """
+        hosts = request.get("hosts")
+        if not isinstance(hosts, list) or not hosts or len(hosts) > ACTIVATION_MAX_HOSTS:
+            return {"ok": False, "error_code": "bad_hosts"}
+        clean: list[str] = []
+        for host in hosts:
+            try:
+                address = ipaddress.ip_address(str(host).strip())
+            except ValueError:
+                return {"ok": False, "error_code": "bad_hosts"}
+            if address.version != 4 or not (address.is_private or address.is_loopback):
+                return {"ok": False, "error_code": "bad_hosts"}
+            if str(address) not in clean:
+                clean.append(str(address))
+        generated = request.get("generate") is True
+        password = hik.generate_password() if generated else request.get("password")
+        problem = hik.password_problem(password if isinstance(password, str) else "")
+        if problem:
+            return {"ok": False, "error_code": problem}
+        with self._lock:
+            cutoff = time.time() - ACTIVATION_TTL_SECONDS
+            self._activations = {k: v for k, v in self._activations.items()
+                                 if v.get("finished", v["started"]) >= cutoff}
+            if any(job["status"] == "running" for job in self._activations.values()):
+                # Два пакета разом — два разных пароля на одной камере в гонке.
+                return {"ok": False, "error_code": "busy"}
+            job_id = secrets.token_urlsafe(8)
+            job = {"status": "running", "started": time.time(), "hosts": clean,
+                   "results": [], "password": password, "generated": generated}
+            self._activations[job_id] = job
+        threading.Thread(target=self._run_activation, args=(job_id, clean, password),
+                         daemon=True).start()
+        return {"ok": True, "activation_id": job_id, "status": "running", "hosts": clean}
+
+    def _run_activation(self, job_id: str, hosts: list[str], password: str) -> None:
+        keys = self.activation_keys()
+        for host in hosts:
+            try:
+                result = self._activate_one(host, password, keys)
+            except Exception as exc:  # одна камера не должна оборвать пакет
+                result = {"host": host, "outcome": "failed", "stage": "internal",
+                          "detail": type(exc).__name__}
+            with self._lock:
+                self._activations[job_id]["results"].append(result)
+        with self._lock:
+            job = self._activations[job_id]
+            job["status"], job["finished"] = "done", time.time()
+
+    def _activate_one(self, host: str, password: str, keys) -> dict:
+        """Одна камера: состояние → хранилище → активация → один логин → ONVIF → поток.
+
+        Повторов нет нигде, где камера считает неудачные входы: неверный
+        пароль дважды — шаг к блокировке, а камера здесь новая и чужая.
+        """
+        base = f"http://{host}:{self.activation_port}"
+        result: dict = {"host": host, "outcome": "failed", "stage": "", "onvif": False,
+                        "stream": False}
+        status = hik.activation_status(base)
+        if status.activated is None:
+            result["stage"] = "not_hikvision"
+            return result
+        result["protocol"] = status.protocol
+        if status.activated:
+            result["outcome"] = "already_active"
+            return result
+        onvif_password = hik.generate_password()
+        self._vault_put(host, admin_user=hik.ADMIN_USER, admin_password=password,
+                        onvif_user=hik.ONVIF_USER, onvif_password=onvif_password,
+                        state="activating", protocol=status.protocol)
+        error = ""
+        try:
+            hik.activate(base, password, status.protocol, keys=keys)
+        except hik.ActivationError as exc:
+            error = exc.code
+        # Ответ на активацию мог потеряться, а мог прийти «OK» без эффекта —
+        # верим только самой камере: состояние и вход новым паролем.
+        after = hik.activation_status(base)
+        if after.activated is not True:
+            self._vault_put(host, state="not_activated")
+            result["stage"] = error or "not_applied"
+            return result
+        try:
+            info = hik.verify_login(base, hik.ADMIN_USER, password)
+        except hik.ActivationError as exc:
+            self._vault_put(host, state="unverified")
+            result.update(outcome="unverified", stage=exc.code)
+            return result
+        self._vault_put(host, state="activated", model=info.get("model", ""))
+        result.update(outcome="activated", model=info.get("model", ""))
+        admin = (hik.ADMIN_USER, password)
+        try:
+            hik.enable_onvif(base, admin)
+            hik.ensure_onvif_user(base, admin, hik.ONVIF_USER, onvif_password)
+        except hik.ActivationError as exc:
+            result["stage"] = exc.code
+            return result
+        result["onvif"] = True
+        self._vault_put(host, state="onvif_ready")
+        found, failure = None, "stream"
+        for attempt in range(ACTIVATION_PROBE_ATTEMPTS):
+            try:
+                found = discovery.probe(host, hik.ONVIF_USER, onvif_password,
+                                        service_url=f"{base}/onvif/device_service",
+                                        vendor_hint="hikvision")
+                break
+            except discovery.DiscoveryError as exc:
+                if "логин" in str(exc):
+                    failure = "onvif_login"
+                    break
+            if attempt + 1 < ACTIVATION_PROBE_ATTEMPTS:
+                time.sleep(ACTIVATION_PROBE_PAUSE_SEC)
+        if found is None:
+            result["stage"] = failure
+            return result
+        entry = {"rtsp_url": found.main_url, "detect_rtsp_url": found.sub_url or found.main_url}
+        if found.snapshot_url:
+            entry.update(snapshot_url=found.snapshot_url, snapshot_user=hik.ONVIF_USER,
+                         snapshot_password=onvif_password)
+        summary = found.summary()
+        summary["model"] = summary.get("model") or info.get("model", "")
+        result.update(stream=bool(found.verified), summary=summary,
+                      probe_token=self._remember_probe(entry, summary))
+        if not found.verified:
+            result["stage"] = "stream"
+        return result
+
+    def activation_status(self, job_id: str) -> dict:
+        """Итог по каждой камере. Пароль отдаётся один раз и только если хоть
+        одна камера его приняла (или могла принять — «не проверено»)."""
+        with self._lock:
+            job = self._activations.get(job_id)
+            if job is None:
+                raise BridgeError("not_found")
+            reply = {"ok": True, "activation_id": job_id, "status": job["status"],
+                     "hosts": job["hosts"], "results": [dict(r) for r in job["results"]],
+                     "generated": job["generated"]}
+            if job["status"] == "done" and "password" in job:
+                password = job.pop("password")
+                if any(r.get("outcome") in ("activated", "unverified") for r in job["results"]):
+                    reply["password"] = password
+                    reply["vault"] = True
+            return reply
 
     def _take_probe(self, token: str) -> dict:
         with self._lock:
@@ -899,6 +1098,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/v1/discovery/scans/"):
             try: return self.json(200, self.server.bridge.scan_status(path.rsplit("/", 1)[1]))
             except BridgeError as exc: return self.json(ERROR_STATUS[exc.code], {"error": exc.code})
+        if path.startswith("/v1/activations/"):
+            try: return self.json(200, self.server.bridge.activation_status(path.rsplit("/", 1)[1]))
+            except BridgeError as exc: return self.json(ERROR_STATUS[exc.code], {"error": exc.code})
         if path.startswith("/v1/media/"):
             blob = self.server.bridge.take_token(path.rsplit("/", 1)[1])
             if not blob: return self.json(404, {"error": "not_found"})
@@ -909,7 +1111,7 @@ class Handler(BaseHTTPRequestHandler):
         camera_id, tail = camera_path(path)
         known = path in ("/v1/media-requests", "/v1/cameras", "/v1/discovery/scans",
                          "/v1/discovery/probes", "/v1/detector/model", "/v1/detector/threshold",
-                         "/v1/detector/calibrate") or tail in ("state", "config", "delete")
+                         "/v1/detector/calibrate", "/v1/activations") or tail in ("state", "config", "delete")
         if not known:
             return self.json(404, {"error": "not_found"})
         bridge = self.server.bridge
@@ -936,6 +1138,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(200, bridge.calibrate_detector(request))
             if path == "/v1/discovery/scans":
                 return self.json(200, bridge.start_scan(request.get("networks")))
+            if path == "/v1/activations":
+                # Тело с паролем, как и у проб, не логируется нигде.
+                return self.json(200, bridge.start_activation(request))
             if path == "/v1/discovery/probes":
                 # Тело с паролем не логируется нигде: log_message заглушён, а
                 # текст ошибки собирается из кодов, а не из запроса.

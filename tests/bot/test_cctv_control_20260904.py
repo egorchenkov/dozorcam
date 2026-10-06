@@ -162,6 +162,15 @@ class ControlTest(unittest.IsolatedAsyncioTestCase):
         await self.bot.watch_health()
         self.assertIn("Детектор молчит", self.texts())
 
+    async def test_watchdog_reports_detector_falling_behind(self) -> None:
+        """D-20261003-01: пропуск сегментов при перегрузе был виден только в журнале."""
+        await self.register()
+        await self.bot.watch_health()
+        self.motion_health = {"state": "behind", "reason": "detector_skipped_segments",
+                              "last_motion_at": None}
+        await self.bot.watch_health()
+        self.assertIn("Детектор не успевает", self.texts())
+
     async def test_camera_broken_before_start_is_still_announced(self) -> None:
         """Бот мог подняться, когда камера уже мертва: «сменится» ему не с чего."""
         await self.register()

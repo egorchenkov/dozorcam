@@ -25,7 +25,9 @@ ACTIONS = ("snap", "clip", "stat", "sub", "pause", "resume", "rename", "retire",
            # модель детектора людей: меню, выбор семейства, выбор файла (смена)
            "model", "mfam", "mset",
            # порог детектора по камерам: меню, «Откалибровать», ручной ввод, снять ручной
-           "thr", "thrcal", "thrset", "thrauto")
+           "thr", "thrcal", "thrset", "thrauto",
+           # активация новых Hikvision: одна камера, «Активировать все»
+           "act", "actall")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS topics (

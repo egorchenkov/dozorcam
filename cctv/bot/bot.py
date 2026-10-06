@@ -99,17 +99,23 @@ MODEL_FILES_SHOWN = 12
 # Ввод ручного порога: «auto» снимает его и возвращает автокалибровку.
 THRESHOLD_AUTO_WORDS = ("auto", "авто", "automatic", "автоматически")
 SCAN_WAIT_SEC = 180
+# Активация новых Hikvision: камера — до минуты (RSA-ключ, активация, ONVIF,
+# проба потока), пакет до 16 камер. Мост ведёт задание сам, бот только ждёт.
+ACTIVATION_POLL_SEC = 3
+ACTIVATION_WAIT_SEC = 900
+ACTIVATION_MAX_HOSTS = 16
 # Запись в реестр перезапускает цепочку моста: до сверки тем даём ей встать.
 RESTART_WAIT_SEC = 25
 STATUS_TEXT = {"online": "status.online", "paused": "status.paused",
                "retired": "status.retired", "unavailable": "status.unavailable"}
 CONSOLE_STATE_MARK = {"ok": "🟢", "no_frames": "🔴", "paused": "⏸", "retired": "🗑",
-                      "detector_stalled": "🟠", "detector_blind": "🟠", "detector_disabled": "🟠"}
+                      "detector_stalled": "🟠", "detector_blind": "🟠", "detector_disabled": "🟠",
+                      "detector_behind": "🟡"}
 CONSOLE_STATE_TEXT = {state: f"console.state.{state}" for state in (
     "ok", "no_frames", "paused", "retired",
-    "detector_stalled", "detector_blind", "detector_disabled")}
+    "detector_stalled", "detector_blind", "detector_disabled", "detector_behind")}
 HEALTH_TEXT = {state: f"health.{state}" for state in (
-    "ok", "no_frames", "detector_stalled", "detector_blind", "detector_disabled")}
+    "ok", "no_frames", "detector_stalled", "detector_blind", "detector_disabled", "detector_behind")}
 # Мост целиком — авария всего видеонаблюдения, а не одной камеры: о ней бот пишет
 # владельцу в личку (отдельного канала оповещений у приложения нет). Один
 # пропущенный опрос — ещё не авария: мост мог перезапускаться.
@@ -123,8 +129,32 @@ UNKNOWN_KEY = "hint.unknown"
 # Telegram показывает окном с «ОК», однострочный — исчезающей подсказкой.
 INPUT_PROMPTS = {"rename": "input.rename", "retire": "input.retire",
                  "drop": "input.drop", "creds": "input.creds"}
+# Ввод, в котором приходит секрет: сообщение стирается до любого сетевого вызова.
+SECRET_INPUTS = ("creds", "actpw")
 # Слово подтверждения снятия/удаления: принимается на любом языке каталога.
-CONFIRM_WORDS = {"retire": "confirm.retire", "drop": "confirm.drop"}
+CONFIRM_WORDS = {"retire": "confirm.retire", "drop": "confirm.drop",
+                 "activate": "confirm.activate", "generate": "confirm.generate"}
+# Итог активации по камере → строка каталога.
+ACTIVATION_OUTCOME_TEXT = {"activated": "act.outcome.activated",
+                           "unverified": "act.outcome.unverified",
+                           "already_active": "act.outcome.already_active",
+                           "failed": "act.outcome.failed"}
+ACTIVATION_STAGE_TEXT = {stage: f"act.stage.{stage}" for stage in (
+    "not_hikvision", "no_answer", "challenge_refused", "challenge_format", "challenge_decrypt",
+    "activate_refused", "not_applied", "login_refused", "login_failed", "onvif_enable",
+    "onvif_user", "onvif_login", "stream", "internal")}
+# Протоколы, которыми бот активирует сам (Hikvision); прочие новые камеры
+# получают инструкцию по марке (vendor_setup в движке, docs/vendor-activation.md).
+AUTO_ACTIVATION_PROTOCOLS = ("v3", "legacy")
+MANUAL_SETUP_BRANDS = ("dahua", "imou", "uniview", "tantos", "axis", "hanwha", "reolink",
+                       "vigi", "ezviz", "milesight", "tvt", "xiongmai", "ajax", "hikvision")
+BRAND_NAMES = {"dahua": "Dahua", "imou": "Imou", "uniview": "Uniview", "tantos": "Tantos",
+               "axis": "Axis", "hanwha": "Hanwha Vision (Wisenet)", "reolink": "Reolink",
+               "vigi": "TP-Link VIGI", "ezviz": "EZVIZ", "milesight": "Milesight",
+               "tvt": "TVT", "xiongmai": "Xiongmai (XMEye)", "ajax": "Ajax",
+               "hikvision": "Hikvision"}
+ACTIVATION_PASSWORD_ERRORS = ("password_length", "password_charset", "password_weak",
+                              "password_has_user")
 # Постоянная клавиатура одна на весь чат, поэтому подписи не содержат камеры:
 # камеру определяет тема, в которую пришло нажатие.
 # Ключ подписи → действие. Подписи зависят от языка, а клавиатура у поля ввода
@@ -133,7 +163,7 @@ KEYBOARD_ACTIONS = {"action.snap": "snap", "action.clip": "clip",
                     "action.stat": "stat", "action.sub_on": "sub"}
 KEYBOARD_ROWS = (("action.snap", "action.clip"), ("action.stat", "action.sub_on"))
 MOTION_STATE_TEXT = {state: f"motion.{state}" for state in (
-    "watching", "degraded", "blind", "disabled", "stalled", "unknown")}
+    "watching", "degraded", "behind", "blind", "disabled", "stalled", "unknown")}
 
 
 def keyboard_action(text: str | None) -> str | None:
@@ -327,6 +357,7 @@ class CctvBot:
         self._topic_lock = asyncio.Lock()
         self._bridge_failures = 0
         self._code_attempts: dict[int, int] = {}
+        self._activation_task: asyncio.Task | None = None
 
     # --- доступ -----------------------------------------------------------
     def allowed(self, user_id: int | None) -> bool:
@@ -590,6 +621,8 @@ class CctvBot:
                 return self._t("add.searching_here")
             if action == "cand":
                 return await self._ask_credentials(user_id, center_at or "", "", thread_id)
+            if action in ("act", "actall"):
+                return await self._ask_activation(user_id, thread_id, center_at or "")
             if action == "addr":
                 self.state.expect_input(user_id, CONSOLE_CAMERA, "addr", INPUT_TTL_SEC)
                 return await self._ask_for_text(thread_id, self._t("add.ask_address"))
@@ -645,7 +678,7 @@ class CctvBot:
         if self.allowed(user_id):
             pending = self.state.take_input(user_id)
             if pending is not None:
-                if pending[1].startswith("creds"):
+                if pending[1].startswith(SECRET_INPUTS):
                     # Пароль стирается из чата до любого сетевого вызова: чат
                     # индексируется в личный RAG, и лишней секунды ему хватит.
                     await self._forget_message(message_id)
@@ -753,6 +786,10 @@ class CctvBot:
             return await self._apply_new_camera(user_id, payload, text)
         if head == "thr":
             return await self._apply_threshold(payload, text)
+        if head == "actok":
+            return await self._confirm_activation(user_id, payload, text)
+        if head == "actpw":
+            return await self._apply_activation_password(user_id, payload, text)
         if head == "addr":
             thread_id = await self.ensure_console()
             if thread_id is None:
@@ -850,6 +887,15 @@ class CctvBot:
         listed_known = ", ".join(f"{camera_id} ({host})"
                                  for host, camera_id in sorted(registered.items()))
         fresh = [c for c in candidates if c["host"] not in registered]
+        # Новая Hikvision без пароля: «логин и пароль» у неё спрашивать
+        # бессмысленно — её сначала активируют. Отдельный список и кнопки.
+        inactive = [c for c in fresh if c.get("activated") is False
+                    and c.get("activation") in AUTO_ACTIVATION_PROTOCOLS]
+        # Новая камера марки без автоактивации — инструкция, как задать пароль
+        # вручную; мастер не обрывается: после настройки та же камера кнопкой.
+        manual = [c for c in fresh if c not in inactive
+                  and (c.get("activation") == "manual" or c.get("activated") is False)]
+        fresh = [c for c in fresh if c not in inactive and c not in manual]
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         ttl = self.cfg.callback_ttl_sec
@@ -861,6 +907,27 @@ class CctvBot:
                 InlineKeyboardButton(
                     self._t("add.manual_button"),
                     callback_data=f"cv:addr:{self.state.issue_callback(CONSOLE_CAMERA, 'addr', ttl)}")]
+        act_rows, act_lines = [], []
+        if inactive:
+            act_lines = [self._t("scan.inactive", count=len(inactive))]
+            act_rows = [[InlineKeyboardButton(
+                self._t("act.button_one", label=str(c.get("label") or c["host"])[:48]),
+                callback_data=f"cv:act:{self.state.issue_callback(CONSOLE_CAMERA, 'act', ttl, c['host'])}")]
+                for c in inactive[:ACTIVATION_MAX_HOSTS]]
+            hosts = ",".join(c["host"] for c in inactive[:ACTIVATION_MAX_HOSTS])
+            act_rows.append([InlineKeyboardButton(
+                self._t("act.button_all", count=min(len(inactive), ACTIVATION_MAX_HOSTS)),
+                callback_data=f"cv:actall:{self.state.issue_callback(CONSOLE_CAMERA, 'actall', ttl, hosts)}")])
+        if manual:
+            await self._send_manual_setup(thread_id, manual,
+                                          None if fresh or act_rows else tail)
+            if not fresh and not act_rows:
+                return
+        if not fresh and act_rows:
+            await self.tg.send_message(chat_id=self.chat_id, message_thread_id=thread_id,
+                                       text="\n".join(act_lines),
+                                       reply_markup=InlineKeyboardMarkup(act_rows + [tail]))
+            return
         if not fresh:
             text = (self._t("scan.none_new", known=listed_known) if registered
                     else self._t("scan.none"))
@@ -872,13 +939,50 @@ class CctvBot:
             str(c.get("label") or c["host"])[:64],
             callback_data=f"cv:cand:{self.state.issue_callback(CONSOLE_CAMERA, 'cand', ttl, c['host'])}")]
             for c in fresh[:12]]
+        rows += act_rows
         rows.append(tail)
         lines = [self._t("scan.found", fresh=len(fresh), known=len(known)),
                  self._t("scan.pick")]
         if listed_known:
             lines.insert(1, self._t("scan.skipped", known=listed_known))
+        lines += act_lines
         await self.tg.send_message(chat_id=self.chat_id, message_thread_id=thread_id,
                                    text="\n".join(lines),
+                                   reply_markup=InlineKeyboardMarkup(rows))
+
+    def setup_instruction(self, brand: str) -> str:
+        """Как задать первый пароль камере этой марки вручную."""
+        key = f"setup.{brand}" if brand in MANUAL_SETUP_BRANDS else "setup.generic"
+        return self._t(key)
+
+    async def _send_manual_setup(self, thread_id: int, cameras: list[dict],
+                                 tail: list | None) -> None:
+        """Камеры, которые бот не активирует сам: инструкция по каждой марке
+        один раз и кнопка «пароль уже задан» на камеру — в обычный путь /add."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        ttl = self.cfg.callback_ttl_sec
+        lines = [self._t("scan.manual", count=len(cameras))]
+        by_brand: dict[str, list[dict]] = {}
+        for camera in cameras:
+            brand = str(camera.get("brand") or camera.get("vendor") or "").lower()
+            by_brand.setdefault(brand if brand in MANUAL_SETUP_BRANDS else "", []).append(camera)
+        for brand, group in by_brand.items():
+            hosts = ", ".join(str(c["host"]) for c in group)
+            name = BRAND_NAMES.get(brand) or self._t("setup.unknown_brand")
+            lines.append("")
+            lines.append(self._t("scan.manual_brand", brand=name, hosts=hosts))
+            lines.append(self.setup_instruction(brand))
+        lines.append("")
+        lines.append(self._t("scan.manual_next"))
+        rows = [[InlineKeyboardButton(
+            self._t("scan.manual_button", label=str(c.get("label") or c["host"])[:40]),
+            callback_data=f"cv:cand:{self.state.issue_callback(CONSOLE_CAMERA, 'cand', ttl, c['host'])}")]
+            for c in cameras[:ACTIVATION_MAX_HOSTS]]
+        if tail:
+            rows.append(tail)
+        await self.tg.send_message(chat_id=self.chat_id, message_thread_id=thread_id,
+                                   text="\n".join(lines)[:4000],
                                    reply_markup=InlineKeyboardMarkup(rows))
 
     async def _ask_credentials(self, user_id: int | None, host: str, camera_id: str,
@@ -972,6 +1076,128 @@ class CctvBot:
         self.log(f"камера {camera_id}: добавлена в реестр из чата")
         return self._t("add.added", title=title, camera_id=camera_id)
 
+    # --- активация новых Hikvision -------------------------------------------
+    # Порядок шагов выбран ради пароля: сперва подтверждение словом (активация
+    # необратима), и только потом сам пароль — так он живёт в одном обработчике
+    # и не ждёт в памяти бота следующего сообщения. Сообщение с паролем
+    # стирается до любого сетевого вызова (SECRET_INPUTS в on_text).
+    async def _ask_activation(self, user_id: int | None, thread_id: int, payload: str) -> str:
+        hosts = [h for h in payload.split(",") if h][:ACTIVATION_MAX_HOSTS]
+        if not hosts:
+            return self._t("creds.no_host")
+        self.state.expect_input(user_id, CONSOLE_CAMERA, f"actok|{','.join(hosts)}", INPUT_TTL_SEC)
+        return await self._ask_for_text(thread_id, self._t(
+            "act.confirm", count=len(hosts), hosts=", ".join(hosts),
+            word=self._t(CONFIRM_WORDS["activate"])))
+
+    async def _confirm_activation(self, user_id: int | None, hosts: str, text: str) -> str:
+        if text.strip().lower() not in confirm_words(CONFIRM_WORDS["activate"]):
+            return self._t("act.cancelled")
+        self.state.expect_input(user_id, CONSOLE_CAMERA, f"actpw|{hosts}", INPUT_TTL_SEC)
+        thread_id = await self.ensure_console()
+        prompt = self._t("act.ask_password", word=self._t(CONFIRM_WORDS["generate"]))
+        if thread_id is None:
+            return prompt
+        return await self._ask_for_text(thread_id, prompt)
+
+    async def _apply_activation_password(self, user_id: int | None, hosts: str, text: str) -> str:
+        """Пароль admin для пакета: свой или «сгенерировать» — тогда его создаёт мост."""
+        typed = (text or "").strip()
+        password = None if typed.lower() in confirm_words(CONFIRM_WORDS["generate"]) else typed
+        try:
+            started = await asyncio.to_thread(self.bridge.activation_start,
+                                              hosts.split(","), password)
+        except BridgeError as exc:
+            return self._error(exc.code)
+        finally:
+            password = typed = text = None  # пароль не живёт в кадре дольше нужного
+        if not started.get("ok"):
+            code = str(started.get("error_code") or "")
+            if code in ACTIVATION_PASSWORD_ERRORS:
+                # Камеры не тронуты: правила проверены до сети. Пробуем снова.
+                self.state.expect_input(user_id, CONSOLE_CAMERA, f"actpw|{hosts}", INPUT_TTL_SEC)
+                return self._t(f"act.{code}") + "\n" + self._t("act.password_rules")
+            if code == "busy":
+                return self._t("act.busy")
+            return self._t("act.not_started")
+        self._activation_task = asyncio.create_task(
+            self._await_activation(str(started.get("activation_id") or "")))
+        return self._t("act.started", count=len(started.get("hosts") or []))
+
+    async def _await_activation(self, activation_id: str) -> None:
+        deadline = asyncio.get_running_loop().time() + ACTIVATION_WAIT_SEC
+        status: dict = {}
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(ACTIVATION_POLL_SEC)
+            try:
+                status = await asyncio.to_thread(self.bridge.activation_status, activation_id)
+            except BridgeError:
+                continue
+            if status.get("status") == "done":
+                break
+        if status.get("status") != "done":
+            # Пароль уже лежит в хранилище моста — не потерян, просто не показан.
+            await self.notify_console(self._t("act.timeout"))
+            return
+        await self._finish_activation(status)
+
+    def _activation_line(self, result: dict, added: dict[str, str]) -> str:
+        host = str(result.get("host") or "")
+        outcome = str(result.get("outcome") or "failed")
+        line = self._t(ACTIVATION_OUTCOME_TEXT.get(outcome, "act.outcome.failed"), host=host)
+        stage = str(result.get("stage") or "")
+        if host in added:
+            line += " " + self._t("act.registered", camera_id=added[host])
+        elif outcome == "activated" and result.get("probe_token"):
+            line += " " + self._t("act.not_registered")
+        if stage:
+            line += " " + self._t(ACTIVATION_STAGE_TEXT.get(stage, "act.stage.internal"))
+        return line
+
+    async def _finish_activation(self, status: dict) -> None:
+        """Итог по каждой камере, запись удачных в реестр, пароль — владельцу в личку.
+
+        Пароль приходит из моста один раз. В группу он не идёт: чат —
+        архив и может индексироваться. Не дошёл в личку — он в хранилище моста.
+        """
+        results = [r for r in status.get("results") or [] if isinstance(r, dict)]
+        try:
+            existing = {c.camera_id for c in await asyncio.to_thread(self.bridge.cameras)}
+        except BridgeError:
+            existing = set()
+        added: dict[str, str] = {}
+        for result in results:
+            token = str(result.get("probe_token") or "")
+            if result.get("outcome") != "activated" or not token:
+                continue
+            host = str(result.get("host") or "")
+            summary = result.get("summary") or {}
+            title = f"{summary.get('model') or result.get('model') or 'Hikvision'} {host}"[:64]
+            camera_id = unique_camera_id(f"hik-{host.replace('.', '-')}", existing)
+            try:
+                reply = await asyncio.to_thread(self.bridge.add_camera, camera_id, title, title, token)
+            except BridgeError:
+                continue
+            if reply.get("ok"):
+                existing.add(camera_id)
+                added[host] = camera_id
+        lines = [self._t("act.summary", done=sum(r.get("outcome") == "activated" for r in results),
+                         total=len(results))]
+        lines += [self._activation_line(r, added) for r in results]
+        password = status.get("password")
+        if password:
+            text = self._t("act.password_dm", password=password,
+                           hosts=", ".join(str(r.get("host")) for r in results
+                                           if r.get("outcome") in ("activated", "unverified")))
+            delivered = await self.notify_owner(text)
+            password = text = None
+            lines.append(self._t("act.password_sent" if delivered else "act.password_not_sent"))
+        if added:
+            lines.append(self._t("act.topics_soon"))
+            asyncio.create_task(self._sync_after_restart(first_frame=list(added.values())))
+        await self.notify_console("\n".join(lines))
+        self.log(f"активация: {len(added)} камер в реестре из {len(results)}")
+
     async def _setup(self, camera_id: str, thread_id: int) -> str:
         """Карточка настройки в теме камеры: что записано в реестре и что можно сменить."""
         try:
@@ -1021,17 +1247,19 @@ class CctvBot:
         self.log(f"камера {camera_id}: удалена из реестра из чата")
         return self._t("drop.done")
 
-    async def _sync_after_restart(self, first_frame: str | None = None) -> None:
+    async def _sync_after_restart(self, first_frame: str | list[str] | None = None) -> None:
         """Реестр меняется вместе с перезапуском цепочки — темы сводим уже после него.
 
-        `first_frame` — новая камера: после появления темы шлём в неё первый кадр.
+        `first_frame` — новая камера (или несколько после пакетной активации):
+        после появления темы шлём в неё первый кадр.
         """
+        frames = [first_frame] if isinstance(first_frame, str) else list(first_frame or [])
         await asyncio.sleep(RESTART_WAIT_SEC)
         for attempt in range(3):
             try:
                 await self.sync_registry()
-                if first_frame:
-                    await self.first_frame(first_frame)
+                if frames:
+                    await asyncio.gather(*(self.first_frame(camera_id) for camera_id in frames))
                 return
             except Exception as exc:  # мост может ещё подниматься
                 self.log(f"сверка реестра после перезапуска отложена ({type(exc).__name__})")
@@ -1251,7 +1479,7 @@ class CctvBot:
             return camera.status
         if camera.status != "online":
             return "no_frames"
-        if camera.motion_state in ("stalled", "blind", "disabled"):
+        if camera.motion_state in ("stalled", "blind", "disabled", "behind"):
             return f"detector_{camera.motion_state}"
         return "ok"
 

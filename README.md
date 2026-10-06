@@ -47,8 +47,15 @@ The rest happens in Telegram:
 | Any RTSP camera | `/add rtsp://host:port/path`, snapshot is taken from the stream |
 | Hikvision (ISAPI) | built-in RTSP and `/ISAPI/Streaming/channels/101/picture` templates where ONVIF is silent; optional person gate from the camera's own analytics (ONVIF FieldDetector, `human_gate_mode`) |
 
-Tested live on Hikvision G0/G2/G5 and Tantos cameras. Cameras must already be activated
-with the vendor's tools. Other vendors should work over ONVIF/RTSP but are untested.
+Tested live on Hikvision G0/G2/G5 and Tantos cameras. A new, not yet activated Hikvision
+is activated from `/add` itself: discovery marks it "🔐", the bot asks for the confirmation
+word, then for the admin password (or generates one), and the engine activates the camera
+(ISAPI activation V3 or the older challenge protocol), checks the password with one login,
+enables ONVIF with a separate ONVIF user, checks the stream and adds the camera; "Activate
+all" does the same for every new camera found. The password is shown to the owner once, in
+a private chat, and a copy stays in the engine state (`activation-vault.json`, 0600).
+Other vendors should be activated with their own tools first; they should work over
+ONVIF/RTSP but are untested.
 
 ## Networking: `network_mode: host`, honestly
 
