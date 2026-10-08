@@ -4,85 +4,233 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dozorcam — видеонаблюдение на своём сервере с интерфейсом в Telegram</title>
-<meta name="description" content="Dozorcam пишет короткий буфер с IP-камер, находит людей и шлёт снимки и клипы в forum-группу Telegram. Без облака.">
+<meta name="description" content="Dozorcam следит за IP-камерами на вашем Linux-узле, находит людей и шлёт снимки и клипы в группу Telegram — у каждой камеры своя тема. Без облака и подписки.">
+<meta property="og:title" content="Dozorcam — ваши камеры, ваш Telegram, без облака">
+<meta property="og:description" content="Распознавание людей на IP-камерах у себя дома, снимки и клипы в Telegram. Открытый код, Apache-2.0.">
+<meta property="og:type" content="website">
 <link rel="alternate" hreflang="en" href="../">
 <link rel="alternate" hreflang="ru" href="./">
 <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body>
-<header>
-  <a class="logo" href="./">Dozorcam</a>
-  <nav class="lang"><a href="../" hreflang="en" lang="en">English</a><a href="./" aria-current="page">Русский</a></nav>
-</header>
-<main>
-<section class="hero">
-  <div>
-    <h1>Ваши камеры, ваш Telegram, без облака</h1>
-    <p class="lead">Dozorcam следит за IP-камерами на вашем Linux-узле, находит людей и шлёт
-    снимки и клипы в forum-группу Telegram: у каждой камеры своя тема, плюс тема «Пульт»
-    с состоянием всей системы.</p>
-    <p class="cta"><a class="primary" href="#install">Установка</a><a href="https://github.com/egorchenkov/dozorcam">Исходники на GitHub</a></p>
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="./"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#2a7d4f"/><circle cx="16" cy="16" r="8" fill="none" stroke="#fff" stroke-width="3"/><circle cx="16" cy="16" r="3" fill="#fff"/></svg>Dozorcam</a>
+    <nav class="sections" aria-label="Разделы">
+      <a href="#features">Возможности</a><a href="#install">Установка</a><a href="#usage">Как пользоваться</a><a href="#cameras">Камеры</a><a href="https://github.com/egorchenkov/dozorcam">GitHub</a>
+    </nav>
+    <nav class="lang" aria-label="Язык"><a href="../" hreflang="en" lang="en">EN</a><a href="./" aria-current="page">RU</a></nav>
   </div>
-  <img src="../assets/demo.gif" width="480" height="270" alt="Иллюстрация: человек идёт по садовой дорожке, детектор обводит его рамкой">
+</header>
+
+<main>
+<div class="wrap">
+<section class="hero" style="padding-top:48px">
+  <div>
+    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Релиз <b><!--site:version-->0.1.3<!--/site--></b> · весь интерфейс на английском или русском →</a>
+    <h1>Ваши камеры, ваш Telegram, без облака</h1>
+    <p class="lead">Dozorcam следит за IP-камерами на вашем Linux-узле, распознаёт <b>людей</b> — а не листья,
+    тени и кошку — и присылает в группу Telegram снимок с человеком в рамке и клип этого момента.
+    У каждой камеры своя тема, а вся система управляется из чата.</p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Установка в 3 шага</a>
+      <a class="btn" href="https://github.com/egorchenkov/dozorcam">Исходники на GitHub</a>
+    </div>
+    <ul class="facts">
+      <li>Бесплатно, открытый код</li><li>Без облака и регистрации</li><li>Hikvision, ONVIF, любой RTSP</li><li>amd64 и arm64</li>
+    </ul>
+  </div>
+  <figure>
+    <img src="../assets/demo.gif" width="480" height="270" alt="Иллюстрация: человек идёт по садовой дорожке, детектор обводит его рамкой">
+    <figcaption>Нарисованная иллюстрация — кадров с настоящих камер на сайте нет.</figcaption>
+  </figure>
 </section>
 
-<h2 id="features">Что умеет</h2>
-<div class="features">
-  <div><b>Буфер записи в RAM</b>Кольцевой буфер на каждую камеру в tmpfs: моменты вокруг события под рукой, а SD-карта и диск не изнашиваются.</div>
-  <div><b>Люди, а не листья</b>Детектор движения с порогом шума на камеру, затем ONNX-детектор людей (по умолчанию YOLOX-Tiny) и фильтр неподвижных предметов.</div>
-  <div><b>Интерфейс — Telegram</b>Снимки и клипы по событию и по запросу, пауза, переименование, снятие камеры — кнопками в теме камеры.</div>
-  <div><b>Настройка из чата</b>Одноразовый код в логах делает вас владельцем; бот сам заводит темы и ищет камеры по ONVIF / WS-Discovery.</div>
-  <div><b>Модели и пороги</b>Модели YOLOX, YOLOv5 или в стиле YOLOv8 переключаются из бота на ходу; порог на каждую камеру калибруется по шуму сцены.</div>
-  <div><b>Компактно и закрыто</b>Один мультиархитектурный образ (amd64, arm64) для движка и бота: не root, корневая ФС только на чтение, без capabilities, healthcheck.</div>
+<section id="who">
+  <h2>Для кого</h2>
+  <p class="sub">Для тех, у кого уже стоят IP-камеры и кто хочет знать, когда действительно пришёл человек, —
+  без облака производителя, абонентской платы и ещё одного приложения.</p>
+  <div class="grid c3">
+    <div class="card"><span class="ico">🏡</span><h3>Дом или дача</h3><p>Несколько камер на калитке, двери и во дворе. Сообщение приходит, когда появился человек, — а не каждый раз, когда ветер качнул ветку.</p></div>
+    <div class="card"><span class="ico">🛠</span><h3>Мастерская, гараж, небольшой магазин</h3><p>Семья или команда сидят в одной группе Telegram: все видят события, любой может попросить у камеры свежий кадр или клип.</p></div>
+    <div class="card"><span class="ico">🖥</span><h3>Любителям домашних серверов</h3><p>Один файл Docker Compose на мини-ПК, домашнем сервере или ARM-плате. Видео не уходит дальше вашей сети и вашего чата.</p></div>
+  </div>
+</section>
 </div>
 
-<h2 id="install">Установка в 3 шага</h2>
-<p>Нужен Linux (amd64 или arm64) с Docker и плагином compose; узлу нужен доступ к <code>api.telegram.org</code>.</p>
-<ol class="steps">
-  <li><b>Создайте бота.</b> В Telegram откройте <a href="https://t.me/BotFather">@BotFather</a>, отправьте <code>/newbot</code> и скопируйте токен.</li>
-  <li><b>Запустите Dozorcam</b> с этим токеном:
+<section id="features" class="alt">
+<div class="wrap">
+  <h2>Что умеет</h2>
+  <p class="sub">Всё, что нужно небольшой системе камер, и ничего, что отправляло бы ваш двор на чужой сервер.</p>
+  <div class="grid c3">
+    <div class="card"><span class="ico">👤</span><h3>Видит людей, а не движение</h3><p>Дешёвый фильтр движения с порогом шума на каждую камеру, затем нейросетевой детектор людей (по умолчанию YOLOX-Tiny, по желанию YOLOv5/YOLOv8). Порог подбирается на каждой камере по шуму её сцены.</p></div>
+    <div class="card new"><span class="ico">🤝</span><h3>Подтверждение от камеры</h3><p>Камеры со своим распознаванием людей (Hikvision по ONVIF) подтверждают человека: когда камера говорит «кто-то есть», Dozorcam смотрит внимательнее и не теряет мелкую или полускрытую фигуру.</p></div>
+    <div class="card"><span class="ico">🪣</span><h3>Не путает предметы с людьми</h3><p>Мешок, ведро или куст, которые модель приняла за человека, сверяются с тем же местом кадра несколько секунд назад: ничего не сдвинулось — события нет.</p></div>
+    <div class="card"><span class="ico">📸</span><h3>Снимки и клипы в Telegram</h3><p>В тему камеры приходит снимок с человеком в рамке. Одно нажатие — и из буфера записи собирается клип вокруг этого момента, он смотрится прямо в чате.</p></div>
+    <div class="card"><span class="ico">🎛</span><h3>Пульт в чате</h3><p>Тема «Пульт» показывает состояние всех камер и хранилища; кнопками камеру можно поставить на паузу, переименовать, сменить модель детектора и пороги.</p></div>
+    <div class="card"><span class="ico">🔎</span><h3>Камера — за минуту</h3><p><code>/add</code> находит камеры в сети (ONVIF, WS-Discovery, RTSP), спрашивает логин и пароль и сразу удаляет это сообщение. Новую Hikvision бот даже активирует сам.</p></div>
+    <div class="card"><span class="ico">🔒</span><h3>Без облака — данные ваши</h3><p>Видео — короткий буфер в оперативной памяти вашего узла; долговременная копия — ваш собственный чат Telegram. Ни аккаунтов, ни телеметрии, ни подписки.</p></div>
+    <div class="card new"><span class="ico">🩺</span><h3>Объясняет свои решения</h3><p>Журнал диагностики записывает каждого отвергнутого кандидата с причиной, а суточная сводка отмечает возможные пропуски: на вопрос «почему не сообщил?» есть ответ.</p></div>
+    <div class="card"><span class="ico">📦</span><h3>Компактно и закрыто</h3><p>Один образ для движка и бота под amd64 и arm64: не root, корневая ФС только на чтение, без capabilities, healthcheck, по желанию — взаимный TLS между частями.</p></div>
+  </div>
+</div>
+</section>
+
+<div class="wrap">
+<section id="how">
+  <h2>Как срабатывает распознавание</h2>
+  <p class="sub">Каждый шаг дешёвый, пока не нужен следующий, поэтому небольшой машине хватает на несколько камер.</p>
+  <ol class="flow">
+    <li><b>1 · Буфер</b>Запись с каждой камеры в кольцевой буфер в памяти — диск не изнашивается.</li>
+    <li><b>2 · Фильтр движения</b>Дальше идут только кадры, изменившиеся сильнее шума сцены.</li>
+    <li><b>3 · Детектор людей</b>YOLO оценивает людей; человек должен держаться несколько кадров подряд.</li>
+    <li class="hl"><b>4 · Проверки</b>Фильтр неподвижных предметов; сигнал самой камеры подтверждает или отсекает.</li>
+    <li><b>5 · Telegram</b>Снимок с рамкой в теме камеры, клип — по кнопке.</li>
+  </ol>
+  <div class="grid c3" style="margin-top:22px">
+    <div class="card new"><h3>Новое в <!--site:version-->0.1.3<!--/site-->: один язык во всём</h3><p>Всё, что вы читаете, — на выбранном языке, английском или русском: бот, ошибки поиска и добавления камер, суточная сводка, проверка здоровья. Язык задаётся один раз на всю установку (<code>CCTV_LANG</code>) или в чате командой <code>/lang</code>.</p></div>
+    <div class="card new"><h3>Меньше пропусков и ложных тревог</h3><p>Режим подтверждения: сигнал камеры открывает окно, в котором хватает одного кадра. Камере можно доверить её молчание — ИК-подсвеченный куст на рассвете больше не становится человеком.</p></div>
+    <div class="card new"><h3>Диагностика</h3><p>Журнал отвергнутых кандидатов с причиной и суточная сводка, которая сверяет камеры, смотрящие на одно место. <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Список изменений</a></p></div>
+  </div>
+</section>
+
+<section id="install">
+  <h2>Установка в 3 шага</h2>
+  <p class="sub">Нужны Linux-машина (amd64 или arm64) с Docker и плагином compose, доступ к <code>api.telegram.org</code> и IP-камеры в той же сети.</p>
+  <ol class="steps">
+    <li><h3>Создайте бота в Telegram</h3>Откройте <a href="https://t.me/BotFather">@BotFather</a>, отправьте <code>/newbot</code> и скопируйте токен.</li>
+    <li><h3>Запустите Dozorcam</h3>
 <pre><code>git clone https://github.com/egorchenkov/dozorcam.git &amp;&amp; cd dozorcam
 cp .env.example .env &amp;&amp; sed -i 's/^CCTV_BOT_TOKEN=.*/CCTV_BOT_TOKEN=&lt;токен&gt;/' .env
 docker compose pull --ignore-pull-failures &amp;&amp; docker compose up -d</code></pre>
-  Релизный образ — <code>ghcr.io/egorchenkov/dozorcam</code>; если скачать его не удалось, compose соберёт образ локально.</li>
-  <li><b>Станьте владельцем.</b> <code>docker compose logs bot | grep SETUP</code> покажет одноразовый код — отправьте боту в личку <code>/start &lt;код&gt;</code>.
-  Затем создайте группу с включёнными <b>Темами</b>, добавьте бота администратором («Управление темами», «Удаление сообщений») и отправьте <code>/add</code>, чтобы подключить камеры.</li>
-</ol>
+      Образ <code>ghcr.io/egorchenkov/dozorcam</code> скачается под вашу архитектуру; чтобы закрепить этот релиз, впишите
+      <code>CCTV_IMAGE_TAG=<!--site:version-->0.1.3<!--/site--></code> в <code>.env</code>, а для русского во всём — <code>CCTV_LANG=ru</code>. Если реестр недоступен, compose соберёт образ локально.</li>
+    <li><h3>Станьте владельцем и добавьте камеры</h3><code>docker compose logs bot | grep SETUP</code> покажет одноразовый код —
+      отправьте боту в личку <code>/start &lt;код&gt;</code>, и вы владелец. Создайте группу с включёнными <b>Темами</b>,
+      добавьте бота администратором («Управление темами», «Удаление сообщений») — он сам создаст тему «Пульт».
+      Отправьте туда <code>/add</code>.</li>
+  </ol>
+</section>
 
-<h2 id="cameras">Какие камеры подходят</h2>
-<table>
-  <tr><th>Что</th><th>Как подключается</th></tr>
-  <tr><td>ONVIF (Profile S)</td><td>Находится сама (локальные сети /24 и WS-Discovery); адреса потока и снимка — через ONVIF Media.</td></tr>
-  <tr><td>Любая RTSP-камера</td><td><code>/add rtsp://хост:порт/путь</code>; снимок берётся из потока.</td></tr>
-  <tr><td>Hikvision (ISAPI)</td><td>Встроенные шаблоны RTSP и <code>/ISAPI/Streaming/channels/101/picture</code>, где ONVIF молчит; гейт по людям от аналитики самой камеры — по желанию.</td></tr>
-</table>
-<p class="note">Проверено вживую на камерах Hikvision G0/G2/G5 и Tantos. Камеру нужно заранее активировать средствами производителя. Другие производители должны работать через ONVIF/RTSP, но не проверялись.</p>
+<section id="usage">
+  <h2>Как пользоваться</h2>
+  <p class="sub">Всё происходит в одной группе Telegram с темами. Команды бота:</p>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Команда</th><th>Что делает</th></tr>
+    <tr><td><code>/start &lt;код&gt;</code></td><td>Один раз, в личке: делает вас владельцем бота.</td></tr>
+    <tr><td><code>/setup</code></td><td>Завершает настройку группы и подсказывает, какого права администратора не хватает.</td></tr>
+    <tr><td><code>/add</code></td><td>Ищет камеры в сети; или <code>/add rtsp://хост:порт/путь</code> для камеры вне поиска.</td></tr>
+    <tr><td><code>/menu</code></td><td>Список камер со ссылками на их темы.</td></tr>
+    <tr><td><code>/model</code></td><td>Смена модели детектора людей на ходу, с автооткатом.</td></tr>
+    <tr><td><code>/lang en|ru</code></td><td>Язык интерфейса. По умолчанию — <code>CCTV_LANG</code> установки, иначе язык вашего Telegram, иначе английский.</td></tr>
+  </table>
+  </div>
+  <div class="grid c3" style="margin-top:18px">
+    <div class="card"><h3>Темы камер</h3><p>Сюда приходят события. В закрепе — панель с состоянием потока и детектора; кнопки: 📷 Кадр, 🎞 Клип 30 с, 🔄 Статус, 🔔 уведомления о движении, ⏸ Пауза, ✏️ Имя, ⚙️ Настройка, 🗑 Снять.</p></div>
+    <div class="card"><h3>Клипы</h3><p>Под каждым событием — «🎞 Клип вокруг кадра»: клип вырезается из буфера вокруг момента, когда был замечен человек, даже если детектор отставал на несколько секунд.</p></div>
+    <div class="card"><h3>Тема «Пульт»</h3><p>Состояние всех камер и хранилища, ➕ Добавить камеру, 🧠 Модель детектора, 🎯 Пороги (автокалибровка или вручную на камеру). Новая камера стартует с выключенной детекцией людей: включите её в ⚙️ Настройке, посмотрев на сцену.</p></div>
+  </div>
+</section>
 
-<h2 id="screens">Как это выглядит</h2>
-<div class="shots">
-  <div class="chat" aria-label="Тема камеры в Telegram, иллюстрация">
-    <div class="topic"># Двор · тема камеры</div>
-    <div class="msg">
-      <img src="../assets/event.png" width="480" height="270" alt="Снимок события: человек на дорожке в рамке детектора">
-      <p>👤 <b>Обнаружен человек</b> · Двор · 14:02:19</p>
+<section id="screens">
+  <h2>Как это выглядит</h2>
+  <p class="sub">Макеты с настоящими текстами и кнопками бота. Сцена нарисована, имена и время — примеры.</p>
+  <div class="shots">
+    <figure class="shot">
+      <div class="chat" aria-label="Тема камеры, иллюстрация">
+        <div class="topic"># Двор</div>
+        <div class="msg"><img src="../assets/event.png" width="480" height="270" alt="Снимок события: человек на дорожке в рамке детектора">
+          <p>👤 <b>Обнаружен человек</b> · Двор · 14:02:19</p></div>
+        <div class="btns"><span class="w">🎞 Клип вокруг кадра</span><span>📷 Кадр</span><span>🎞 Клип 30 с</span></div>
+      </div>
+      <figcaption>Событие в теме камеры.</figcaption>
+    </figure>
+    <figure class="shot">
+      <div class="chat" aria-label="Тема «Пульт», иллюстрация">
+        <div class="topic"># Пульт</div>
+        <div class="msg"><p class="mono"><b>Пульт видеонаблюдения</b>
+
+🟢 Двор — в работе
+    последнее движение: 08.10.2026 14:02:19 МСК
+🟢 Калитка — в работе
+⏸ Гараж — на паузе
+
+Хранилище: 1.4 из 4 ГиБ, свободно 2.6 ГиБ
+Обновлено: 08.10.2026 14:05:02 МСК</p></div>
+        <div class="btns"><span>🔄 Обновить</span><span>➕ Добавить камеру</span><span>🧠 Модель детектора</span><span>🎯 Пороги</span></div>
+      </div>
+      <figcaption>Тема «Пульт»: вся система одним взглядом.</figcaption>
+    </figure>
+    <figure class="shot">
+      <div class="chat" aria-label="Добавление камеры, иллюстрация">
+        <div class="topic"># Пульт</div>
+        <div class="msg"><p>Ищу камеры в 192.0.2.0/24. Это занимает до минуты.</p></div>
+        <div class="msg"><p>Найдено новых камер: 2 (в реестре уже 3).
+Выберите камеру — дальше спрошу логин и пароль.</p></div>
+        <div class="msg"><p>🔐 Новых Hikvision без пароля (не активированы): 1.</p></div>
+        <div class="btns"><span class="w">🔐 Активировать все (1)</span><span>Камера 192.0.2.64</span><span>✍️ Ввести адрес</span></div>
+      </div>
+      <figcaption><code>/add</code>: поиск, выбор, пароль — тема появляется с первым кадром.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="cameras">
+  <h2>Поддерживаемые камеры</h2>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Что</th><th>Как подключается</th></tr>
+    <tr><td>Hikvision</td><td>Находится поиском; встроенные шаблоны RTSP и снимка там, где ONVIF молчит. Новую камеру активирует сам <code>/add</code> (задаёт пароль, заводит ONVIF-пользователя). Собственное распознавание людей камеры может отсекать или подтверждать детектор Dozorcam.</td></tr>
+    <tr><td>ONVIF (Profile S)</td><td>Находится автоматически (локальные /24 и WS-Discovery); адреса потока и снимка берутся по ONVIF.</td></tr>
+    <tr><td>Любая RTSP-камера</td><td><code>/add rtsp://хост:порт/путь</code>, по желанию второй поток низкого разрешения для детектора; снимок берётся из потока.</td></tr>
+  </table>
+  </div>
+  <p class="note">Проверено вживую на Hikvision G0/G2/G5 и Tantos. Камеры других производителей нужно заранее активировать их средствами; они должны работать через ONVIF/RTSP, но не проверялись.</p>
+  <h3 style="margin-top:26px">Честные ограничения</h3>
+  <ul class="limits">
+    <li>Архива на диске нет: буфер — минуты в памяти, долговременная копия — чат Telegram.</li>
+    <li>Время в подписях пока московское (МСК), часовой пояс не настраивается.</li>
+    <li>Узлу нужен доступ к <code>api.telegram.org</code>.</li>
+    <li>Языки интерфейса: английский и русский.</li>
+  </ul>
+</section>
+
+<section id="platform">
+  <div class="platform">
+    <div class="mark" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="24" cy="10" r="5"/><circle cx="10" cy="36" r="5"/><circle cx="38" cy="36" r="5"/><path d="M21 14.5 13 31.5M27 14.5l8 17M15 36h18"/><circle cx="24" cy="27" r="3" fill="#fff" stroke="none"/></svg></div>
+    <div>
+      <div class="kicker">Создано на платформе</div>
+      <h2><!--site:platform.ru-->Артель<!--/site--> — универсальная платформа разработки приложений через Telegram-ботов</h2>
+      <p>Dozorcam создан на <!--site:platform.ru_in-->Артели<!--/site--> — универсальной платформе разработки приложений через
+      Telegram-ботов, разработанной Романом Егорченковым. Исходный код платформы скоро будет опубликован на GitHub —
+      следите за обновлениями в его репозиториях.</p>
+      <a class="btn" href="https://github.com/egorchenkov">github.com/egorchenkov</a>
     </div>
-    <div class="btns"><span>🎞 Клип вокруг кадра</span><span>📷 Кадр</span><span>🎞 Клип 30 с</span><span>🔄 Статус</span></div>
   </div>
-  <div>
-    <p>У каждой камеры своя тема. Срабатывание приходит снимком с рамкой детектора; кнопки под ним собирают клип вокруг этого момента из буфера, присылают свежий кадр или состояние камеры.</p>
-    <p>В теме «Пульт» — состояние системы, меню модели детектора (<code>/model</code>) и пороги по камерам.</p>
-    <p class="note">Картинки на странице — иллюстрации: нарисованная сцена и настоящие надписи кнопок бота. Записей с реальных камер здесь нет.</p>
-  </div>
+</section>
+
+<section id="license">
+  <h2>Лицензия</h2>
+  <p>Dozorcam распространяется по <a href="https://github.com/egorchenkov/dozorcam/blob/master/LICENSE">Apache-2.0</a>. В образе
+  есть YOLOX-Tiny (Apache-2.0) и сборка FFmpeg под GPL-3.0-or-later — см.
+  <a href="https://github.com/egorchenkov/dozorcam/blob/master/THIRD_PARTY.md">THIRD_PARTY.md</a>. Веса YOLOv5/YOLOv8
+  (AGPL-3.0) не поставляются; их можно добавить самостоятельно.</p>
+  <p class="note">Домашний проект одного человека, «как есть», без гарантий поддержки.</p>
+</section>
 </div>
-
-<h2 id="languages">Языки</h2>
-<p>Бот говорит по-<b>русски</b> и по-<b>английски</b> и подстраивается под язык Telegram (<code>/lang en|ru</code> — сменить). Другие языки планируются.</p>
-
-<h2 id="license">Лицензия</h2>
-<p>Dozorcam распространяется под <a href="https://github.com/egorchenkov/dozorcam/blob/master/LICENSE">Apache-2.0</a>. В образе есть YOLOX-Tiny (Apache-2.0) и сборка FFmpeg под GPL-3.0-or-later — см. <a href="https://github.com/egorchenkov/dozorcam/blob/master/THIRD_PARTY.md">THIRD_PARTY.md</a>. Веса YOLOv5/YOLOv8 (AGPL-3.0) не поставляются, их можно добавить самостоятельно.</p>
-<p class="note">Домашний проект одного человека, «как есть», без гарантий поддержки.</p>
 </main>
-<footer>Dozorcam · <a href="https://github.com/egorchenkov/dozorcam">GitHub</a> · <a href="../" hreflang="en" lang="en">English version</a></footer>
+
+<footer>
+  <div class="wrap">
+    <span>Dozorcam <!--site:version-->0.1.3<!--/site--></span>
+    <a href="https://github.com/egorchenkov/dozorcam/releases">Релизы</a>
+    <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Список изменений</a>
+    <a href="https://github.com/egorchenkov/dozorcam">GitHub</a>
+    <span class="sep"></span>
+    <a href="../" hreflang="en" lang="en">English version</a>
+  </div>
+</footer>
 </body>
 </html>

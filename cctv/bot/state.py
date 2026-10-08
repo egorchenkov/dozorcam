@@ -152,11 +152,11 @@ class State:
     def bind_topic(self, camera_id: str, thread_id: int, title: str) -> Topic:
         """Связать камеру с темой. Тема никогда не переиспользуется под другой id."""
         if not valid_camera_id(camera_id):
-            raise ValueError(f"недопустимый camera_id: {camera_id!r}")
+            raise ValueError(f"invalid camera_id: {camera_id!r}")
         existing = self.camera_for_thread(thread_id)
         if existing is not None and existing != camera_id:
             raise ValueError(
-                f"тема {thread_id} уже принадлежит камере {existing}: переиспользование запрещено"
+                f"topic {thread_id} already belongs to camera {existing}: reuse is forbidden"
             )
         self.db.execute(
             "INSERT INTO topics(camera_id, thread_id, title, status, created_at) "
@@ -266,7 +266,7 @@ class State:
                        center_at: str | None = None) -> str:
         """Выдать непрозрачный токен: в callback-data не попадают id/адреса камер."""
         if action not in ACTIONS:
-            raise ValueError(f"неизвестное действие кнопки: {action!r}")
+            raise ValueError(f"unknown button action: {action!r}")
         token = secrets.token_urlsafe(12)
         self.db.execute(
             "INSERT INTO callbacks(token, camera_id, action, center_at, expires_at) VALUES(?,?,?,?,?)",

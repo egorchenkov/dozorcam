@@ -221,10 +221,14 @@ class PairSummaryTest(unittest.TestCase):
         silent = summary["camera_signal_no_event"]
         self.assertEqual([T0 + 2010, T0 + 5000], [s["at"] for s in silent])
         self.assertTrue(silent[0]["partner_event"])
-        text = person_diag.render(summary, "2026-10-06", person_diag.parse_offset("+03:00"))
+        text = person_diag.render(summary, "2026-10-06", person_diag.parse_offset("+03:00"), "ru")
         self.assertIn("парных 1, одиночных объяснимых 1, подозрительных 1", text)
         self.assertIn("door_out/x.jpg", text)
         self.assertIn("не вердикт", text)
+        english = person_diag.render(summary, "2026-10-06", person_diag.parse_offset("+03:00"), "en")
+        self.assertIn("paired 1, single explained 1, suspicious 1", english)
+        self.assertIn("not a verdict", english)
+        self.assertNotRegex(english, "[А-Яа-яЁё]")
 
     def test_journal_roundtrip_and_daily_files(self):
         import pathlib

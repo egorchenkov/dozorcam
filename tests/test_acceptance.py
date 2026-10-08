@@ -121,7 +121,11 @@ class StartGuardsTest(unittest.TestCase):
         done = subprocess.run([sys.executable, "-m", "cctv", "bot"], env=env, capture_output=True,
                               text=True, timeout=60)
         self.assertEqual(2, done.returncode, done.stderr)
-        self.assertIn("FAIL: не задана обязательная переменная", done.stderr)
+        self.assertIn("FAIL: required variable CCTV_BOT_TOKEN is not set", done.stderr)
+        done = subprocess.run([sys.executable, "-m", "cctv", "bot"], env={**env, "CCTV_LANG": "ru"},
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(2, done.returncode, done.stderr)
+        self.assertIn("FAIL: не задана обязательная переменная CCTV_BOT_TOKEN", done.stderr)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
+from .. import i18n
+
 # 554 — RTSP, остальные — типовые порты веб-интерфейса и ONVIF-службы устройств.
 SCAN_PORTS = (554, 80, 8000, 8899, 8080)
 ONVIF_PORTS = (80, 8000, 8899, 8080, 5000)
@@ -87,8 +89,10 @@ VENDOR_HINTS = (
 )
 
 
-class DiscoveryError(RuntimeError):
-    """Опрос не удался. Текст пригоден для показа человеку и без секретов."""
+class DiscoveryError(i18n.CodedError, RuntimeError):
+    """Опрос не удался. Ключ каталога (discovery.*) — для показа человеку, без секретов."""
+
+    prefix = "discovery"
 
 
 @dataclass
@@ -167,15 +171,18 @@ def mask(url: str | None) -> str:
     return re.sub(r"://[^/@]+@", "://***@", url)
 
 
+TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh",
+    "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o",
+    "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "h", "ц": "c",
+    "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "", "э": "e",
+    "ю": "yu", "я": "ya",
+}
+
+
 def slugify(title: str) -> str:
     """camera_id из имени: латиница, цифры, дефис. Пусто — вызывающий подставит своё."""
-    table = {
-        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh",
-        "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o",
-        "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "h", "ц": "c",
-        "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "", "э": "e",
-        "ю": "yu", "я": "ya",
-    }
+    table = TRANSLIT
     out = []
     for char in (title or "").strip().lower():
         if char in table:
@@ -199,17 +206,17 @@ def parse_networks(raw: str | list[str]) -> list[ipaddress.IPv4Network]:
             network = (chunk if isinstance(chunk, ipaddress.IPv4Network)
                        else ipaddress.ip_network(str(chunk).strip(), strict=False))
         except ValueError as exc:
-            raise DiscoveryError(f"не сеть: {chunk}") from exc
+            raise DiscoveryError("not_network", value=str(chunk)) from exc
         if network.version != 4:
-            raise DiscoveryError("поддерживается только IPv4")
+            raise DiscoveryError("ipv4_only")
         if not (network.is_private or network.is_loopback):
-            raise DiscoveryError(f"сеть не приватная: {network}")
+            raise DiscoveryError("not_private", network=str(network))
         total += network.num_addresses
         if total > MAX_SCAN_HOSTS:
-            raise DiscoveryError("слишком большой диапазон опроса")
+            raise DiscoveryError("range_too_large")
         networks.append(network)
     if not networks:
-        raise DiscoveryError("не задана ни одна сеть для поиска")
+        raise DiscoveryError("no_networks")
     return networks
 
 
@@ -380,19 +387,19 @@ def soap_call(url: str, body: str, *, user: str | None = None, password: str | N
     except urllib.error.HTTPError as exc:
         payload = exc.read(512 * 1024)
         if exc.code in (401, 403):
-            raise DiscoveryError("камера не приняла логин или пароль") from None
+            raise DiscoveryError("auth_failed") from None
     except Exception as exc:  # сеть, TLS, мусор в ответе — всё это «не ONVIF»
-        raise DiscoveryError(f"нет ответа ONVIF ({type(exc).__name__})") from None
+        raise DiscoveryError("onvif_no_answer", reason=type(exc).__name__) from None
     try:
         root = ET.fromstring(payload)
     except ET.ParseError:
-        raise DiscoveryError("ответ ONVIF не разобран") from None
+        raise DiscoveryError("onvif_unparsed") from None
     fault = root.find(".//s:Fault", NS)
     if fault is not None:
         text = " ".join(t.strip() for t in fault.itertext() if t.strip())
         if re.search(r"(?i)auth|password|credential|sender not authorized", text):
-            raise DiscoveryError("камера не приняла логин или пароль")
-        raise DiscoveryError("камера отказала в запросе ONVIF")
+            raise DiscoveryError("auth_failed")
+        raise DiscoveryError("onvif_refused")
     return root
 
 
@@ -450,14 +457,14 @@ def probe(host: str, user: str, password: str, *, service_url: str = "",
     try:
         ipaddress.ip_address(host)
     except ValueError:
-        raise DiscoveryError("адрес камеры — IP (192.0.2.64) или rtsp://хост:порт/путь") from None
+        raise DiscoveryError("bad_address") from None
     detected = Detected(host=host, vendor=vendor_hint)
     service = service_url or onvif_service(host, timeout=min(timeout, 2.0))
     if service:
         try:
             _probe_onvif(detected, service, user, password, timeout)
         except DiscoveryError as exc:
-            if "логин" in str(exc):
+            if exc.code == "auth_failed":
                 raise
             detected.source = "template"
     else:
@@ -465,7 +472,7 @@ def probe(host: str, user: str, password: str, *, service_url: str = "",
     if not detected.main_url:
         _probe_templates(detected, user, password, timeout)
     if not detected.main_url:
-        raise DiscoveryError("не удалось определить поток камеры")
+        raise DiscoveryError("no_stream")
     detected.verified = rtsp_ok(detected.main_url, timeout=timeout)
     if detected.sub_url and not rtsp_ok(detected.sub_url, timeout=timeout):
         detected.sub_url = ""
@@ -477,17 +484,17 @@ def probe_url(url: str, user: str, password: str, *, detect_url: str = "",
     """Поток, заданный человеком: проверить его и (если дан) поток детектора."""
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "rtsp" or not parts.hostname:
-        raise DiscoveryError("адрес потока должен быть rtsp://…")
+        raise DiscoveryError("stream_not_rtsp")
     detected = Detected(host=parts.hostname, source="manual")
     detected.main_url = with_credentials(url, user, password)
     code = rtsp_describe(detected.main_url, timeout=timeout)[0]
     if code == 401:
-        raise DiscoveryError("камера не приняла логин или пароль")
+        raise DiscoveryError("auth_failed")
     detected.verified = code == 200
     if detect_url:
         sub = urllib.parse.urlsplit(detect_url)
         if sub.scheme != "rtsp" or sub.hostname != parts.hostname:
-            raise DiscoveryError("поток детектора должен быть rtsp:// той же камеры")
+            raise DiscoveryError("detect_other_camera")
         candidate = with_credentials(detect_url, user, password)
         detected.sub_url = candidate if rtsp_ok(candidate, timeout=timeout) else ""
     return detected

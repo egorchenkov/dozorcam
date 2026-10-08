@@ -33,7 +33,7 @@ try:
 except ImportError:  # Detector can fall back to snapshots when OpenCV is absent.
     cv2 = numpy = None
 
-from .. import settings
+from .. import i18n, settings
 from . import camera_discovery as discovery
 from . import hikvision_activation as hik
 from . import model_switch
@@ -371,11 +371,11 @@ class Bridge:
         # домашней установке не нужно знать, что такое CIDR, чтобы найти камеру.
         target = networks or self.networks or discovery.local_networks()
         if not target:
-            return {"ok": False, "error": "сети для поиска не заданы (CCTV_DISCOVERY_NETWORKS)"}
+            return discovery.DiscoveryError("no_networks").reply()
         try:
             parsed = discovery.parse_networks(target)
         except discovery.DiscoveryError as exc:
-            return {"ok": False, "error": str(exc)}
+            return exc.reply()
         with self._lock:
             self._sweep_scans()
             running = next((sid for sid, job in self._scans.items()
@@ -396,8 +396,9 @@ class Bridge:
                 found = discovery.scan(parsed, extra_hosts=extra)
                 result = {"status": "done", "candidates": [c.as_dict() for c in found]}
             except Exception as exc:  # опрос сети не должен ронять мост
-                result = {"status": "failed", "candidates": [],
-                          "error": f"опрос не удался ({type(exc).__name__})"}
+                failed = discovery.DiscoveryError("scan_failed", reason=type(exc).__name__).reply()
+                result = {"status": "failed", "candidates": [], "error": failed["error"],
+                          "error_key": failed["error_key"], "error_params": failed["error_params"]}
             with self._lock:
                 job = self._scans.get(scan_id)
                 if job is not None:
@@ -420,7 +421,8 @@ class Bridge:
                           for c in job["candidates"]]
             return {"ok": True, "scan_id": scan_id, "status": job["status"],
                     "candidates": candidates,
-                    "error": job.get("error", ""), "networks": job.get("networks", [])}
+                    "error": job.get("error", ""), "error_key": job.get("error_key", ""),
+                    "error_params": job.get("error_params", {}), "networks": job.get("networks", [])}
 
     def _registered_hosts(self) -> dict[str, str]:
         """Хост → camera_id по реестру. Кандидат поиска с таким хостом — уже
@@ -451,7 +453,7 @@ class Bridge:
             found = discovery.probe(host.strip(), username, password,
                                     detect_url=detect_url.strip())
         except discovery.DiscoveryError as exc:
-            return {"ok": False, "error": str(exc)}
+            return exc.reply()
         entry = {
             "rtsp_url": found.main_url,
             "detect_rtsp_url": found.sub_url or found.main_url,
@@ -611,7 +613,7 @@ class Bridge:
                                         vendor_hint="hikvision")
                 break
             except discovery.DiscoveryError as exc:
-                if "логин" in str(exc):
+                if exc.code == "auth_failed":
                     failure = "onvif_login"
                     break
             if attempt + 1 < ACTIVATION_PROBE_ATTEMPTS:
@@ -679,12 +681,12 @@ class Bridge:
                         break
                     chunks.append(chunk)
         except OSError:
-            return {"ok": False, "error": "писарь реестра недоступен"}
+            return writer_error("writer_unavailable")
         try:
             reply = json.loads(b"".join(chunks).split(b"\n", 1)[0] or b"{}")
         except ValueError:
-            return {"ok": False, "error": "писарь реестра ответил непонятным"}
-        return reply if isinstance(reply, dict) else {"ok": False, "error": "неверный ответ писаря"}
+            return writer_error("writer_garbled")
+        return reply if isinstance(reply, dict) else writer_error("writer_garbled")
 
     def _provision_local(self, command: dict) -> dict:
         from . import cctv_provision as writer
@@ -701,9 +703,9 @@ class Bridge:
                     shutil.copyfile(self.registry_seed, target)
                 reply, _restart = writer.apply(command, path=target, backups=self.registry_backups)
             except writer.Invalid as exc:
-                return {"ok": False, "error": str(exc)}
+                return exc.reply()
             except Exception as exc:  # содержимое команды (пароль) в ответ не попадает
-                return {"ok": False, "error": f"внутренняя ошибка писаря ({type(exc).__name__})"}
+                return writer_error("writer_failed", reason=type(exc).__name__)
         return reply
 
     def registry_config(self, camera_id: str | None = None) -> dict:
@@ -730,7 +732,7 @@ class Bridge:
         if request.get("person_detection") is True:
             entry["person_detection"] = True
         if camera_id in self.cameras:
-            return {"ok": False, "error": "камера с таким camera_id уже есть"}
+            return writer_error("camera_exists", camera_id=camera_id)
         return self.provision({"command": "upsert", "camera": entry})
 
     def update_camera(self, camera_id: str, request: dict) -> dict:
@@ -752,7 +754,7 @@ class Bridge:
         if request.get("snapshot_aspect") is not None:
             entry["snapshot_aspect"] = request["snapshot_aspect"]
         if set(entry) == {"camera_id"}:
-            return {"ok": False, "error": "нечего менять"}
+            return writer_error("nothing_to_change")
         # Отключение детекции людей — снятие ключа, а писарь сливает записи:
         # поэтому False передаём как явную замену всей записи.
         if entry.get("person_detection") is False:
@@ -1019,7 +1021,7 @@ class Bridge:
             return context
         if parts.scheme == "http" and settings.is_loopback_host(parts.hostname):
             return None
-        raise ValueError("events URL: http допускается только на loopback")
+        raise ValueError("events URL: plain http is allowed only on loopback")
 
     def motion(self, camera: Camera, captured_at: str | None = None, *, source: str = "rtsp_frame_diff",
                snapshot_body: bytes | None = None) -> None:
@@ -1067,6 +1069,13 @@ class Bridge:
                 record_path.replace(self.storage / "events" / "delivered" / record_path.name)
             except OSError:
                 pass
+
+
+def writer_error(code: str, **params) -> dict:
+    """Отказ записи в реестр — ключ каталога registry.*: текст переводит бот."""
+    from . import cctv_provision
+
+    return cctv_provision.Invalid(code, **params).reply()
 
 
 def now_plus(seconds: int) -> str:
@@ -1163,11 +1172,11 @@ def server_context(env=None) -> ssl.SSLContext | None:
     if not settings.internal_tls(env):
         bind = env.get("CCTV_BIND", "127.0.0.1")
         if not settings.is_loopback_host(bind):
-            raise SystemExit(f"FAIL: без CCTV_INTERNAL_TLS мост слушает только loopback, а не {bind}")
+            raise SystemExit("FAIL: " + i18n.t("config.bridge_loopback_only", i18n.env_lang(env), bind=bind))
         return None
     missing = [key for key in ("CCTV_SERVER_CERT", "CCTV_SERVER_KEY", "CCTV_CLIENT_CA") if not env.get(key)]
     if missing:
-        raise SystemExit("FAIL: CCTV_INTERNAL_TLS=1 требует " + ", ".join(missing))
+        raise SystemExit("FAIL: " + i18n.t("config.tls_requires", i18n.env_lang(env), missing=", ".join(missing)))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(env["CCTV_SERVER_CERT"], env["CCTV_SERVER_KEY"])
     context.load_verify_locations(env["CCTV_CLIENT_CA"]); context.verify_mode = ssl.CERT_REQUIRED

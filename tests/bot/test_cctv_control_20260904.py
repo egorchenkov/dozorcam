@@ -33,14 +33,14 @@ PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 class MoscowTime(unittest.TestCase):
     def test_utc_marks_are_shown_in_moscow_time(self) -> None:
         """По проводу UTC, человеку — МСК: время события искали, сложив три часа."""
-        self.assertEqual("04.09.2026 14:19:53 МСК", human_time("2026-09-04T11:19:53Z"))
-        self.assertEqual("04.09.2026 14:06:52 МСК", human_time("2026-09-04T11:06:52+00:00"))
+        self.assertEqual("04.09.2026 14:19:53 МСК", human_time("2026-09-04T11:19:53Z", "ru"))
+        self.assertEqual("04.09.2026 14:06:52 МСК", human_time("2026-09-04T11:06:52+00:00", "ru"))
 
     def test_date_rolls_over_correctly(self) -> None:
-        self.assertEqual("16.01.2026 02:40:00 МСК", human_time("2026-01-15T23:40:00Z"))
+        self.assertEqual("16.01.2026 02:40:00 МСК", human_time("2026-01-15T23:40:00Z", "ru"))
 
     def test_missing_and_broken_marks_do_not_break_caption(self) -> None:
-        self.assertEqual("время неизвестно", human_time(None))
+        self.assertEqual("время неизвестно", human_time(None, "ru"))
         self.assertEqual("мусор", human_time("мусор"))
 
 

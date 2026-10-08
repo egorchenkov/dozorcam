@@ -25,7 +25,15 @@ jobs:
       - run: |
           python -m pip install -r requirements-dev.txt
           python -m pip install -e . --no-deps
+      # Отдельным шагом, чтобы провал был виден по имени: паритет каталогов en/ru и
+      # гейт «русский текст для человека — только в cctv/i18n/locales».
+      - name: i18n gate (en/ru parity, no Russian literals outside locales)
+        run: python -m pytest -q tests/test_i18n.py tests/test_i18n_literals.py
       - run: python -m pytest -q
+      # Сайт (docs/site) и оба README говорят версию релиза (cctv/__init__.py) и одно имя
+      # платформы из docs/site/site.json; у релизной версии есть раздел в CHANGELOG.
+      - name: site and READMEs = release version
+        run: python scripts/site-sync.py --check
 
   secrets:
     runs-on: ubuntu-24.04

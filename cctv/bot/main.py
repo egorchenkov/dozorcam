@@ -38,9 +38,7 @@ def _forbid_foreign_secrets(cfg) -> None:
         name for name in os.environ if name.startswith(prefixes) or name in exact
     )
     if leaked:
-        raise config.ConfigError(
-            "в окружении есть посторонние секреты/прокси, запуск запрещён: " + ", ".join(leaked)
-        )
+        raise config.ConfigError("foreign_secrets", names=", ".join(leaked))
 
 
 async def _amain() -> int:
@@ -153,8 +151,9 @@ async def _amain() -> int:
 def register_handlers(application, core, state) -> None:
     """Обработчики Telegram. Отдельно от _amain: сквозной прогон мастера
     на стенде кормит те же обработчики синтетическими апдейтами."""
+    from telegram import Update
     from telegram.ext import (CallbackQueryHandler, ChatMemberHandler, CommandHandler,
-                              MessageHandler, filters)
+                              MessageHandler, TypeHandler, filters)
 
     async def reply(message, text):
         if text:
@@ -258,6 +257,14 @@ def register_handlers(application, core, state) -> None:
             await ctx.bot.send_message(chat_id=message.chat_id,
                                        message_thread_id=thread_id, text=answer)
 
+    async def on_any(update, _ctx):
+        """Язык Telegram владельца — подсказка языка бота, пока не выбран явно."""
+        user = update.effective_user
+        if user is not None:
+            core.note_language(user.id, getattr(user, "language_code", None))
+
+    # Группа −1: смотрит каждое обновление раньше остальных и никого не блокирует.
+    application.add_handler(TypeHandler(Update, on_any), group=-1)
     application.add_handler(CommandHandler("start", on_start))
     application.add_handler(CommandHandler("menu", on_menu))
     application.add_handler(CommandHandler("setup", on_setup))

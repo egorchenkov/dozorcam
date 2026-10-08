@@ -53,7 +53,7 @@ def _text(payload: dict, key: str, *, required: bool = True) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
         if required:
-            raise EventRejected(f"поле {key} отсутствует или не строка")
+            raise EventRejected(f"field {key} is missing or not a string")
         return ""
     return value.strip()
 
@@ -63,17 +63,17 @@ def _media(payload: dict, *, kind: str | None, scheme: str = "https") -> Media |
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise EventRejected("блок медиа не объект")
+        raise EventRejected("media block is not an object")
     url = _text(raw, "url")
     # Схема ссылки — та же, что у самого моста: при mTLS открытый http не пройдёт.
     if not url.startswith(f"{scheme}://"):
-        raise EventRejected(f"media URL обязан быть {scheme}")
+        raise EventRejected(f"media URL must be {scheme}")
     sha = _text(raw, "sha256", required=False) or _text(payload, "sha256", required=False)
     if not SHA256_RE.match(sha):
-        raise EventRejected("sha256 обязателен и должен быть hex(64)")
+        raise EventRejected("sha256 is required and must be hex(64)")
     size = raw.get("bytes", payload.get("bytes"))
     if size is not None and (not isinstance(size, int) or size <= 0):
-        raise EventRejected("bytes должен быть положительным целым")
+        raise EventRejected("bytes must be a positive integer")
     default_type = "video/mp4" if kind == "clip" else "image/jpeg"
     content_type = payload.get("content_type") or raw.get("content_type") or default_type
     return Media(url=url, sha256=sha.lower(), bytes=size, content_type=str(content_type))
@@ -82,29 +82,29 @@ def _media(payload: dict, *, kind: str | None, scheme: str = "https") -> Media |
 def normalize_event(payload: object, *, media_scheme: str = "https") -> Event:
     """Привести тело запроса к `Event` или отвергнуть его с понятной причиной."""
     if not isinstance(payload, dict):
-        raise EventRejected("тело события не JSON-объект")
+        raise EventRejected("event body is not a JSON object")
     event_type = _text(payload, "type")
     if event_type not in EVENT_TYPES:
-        raise EventRejected(f"неизвестный тип события: {event_type}")
+        raise EventRejected(f"unknown event type: {event_type}")
 
     from .state import valid_camera_id  # локальный импорт: state не тянет транспорт
 
     camera_id = _text(payload, "camera_id")
     if not valid_camera_id(camera_id):
-        raise EventRejected("camera_id не соответствует формату реестра")
+        raise EventRejected("camera_id does not match the registry format")
 
     kind = payload.get("kind") if event_type in ("media.ready", "media.failed") else None
     if event_type == "media.ready" and kind not in ("snapshot", "clip"):
-        raise EventRejected("media.ready требует kind=snapshot|clip")
+        raise EventRejected("media.ready requires kind=snapshot|clip")
     if kind is not None and kind not in ("snapshot", "clip"):
         kind = None
     # Отказ обязан нести причину: без неё бот не сможет объяснить пользователю тишину.
     if event_type == "media.failed" and not _text(payload, "error", required=False):
-        raise EventRejected("media.failed без кода error")
+        raise EventRejected("media.failed without an error code")
 
     media = _media(payload, kind=kind, scheme=media_scheme)
     if event_type == "media.ready" and media is None:
-        raise EventRejected("media.ready без блока download")
+        raise EventRejected("media.ready without a download block")
 
     return Event(
         event_id=_text(payload, "event_id"),

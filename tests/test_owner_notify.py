@@ -46,7 +46,7 @@ class NotifyCommandTest(unittest.TestCase):
         self.assertEqual(["7", "8"], [call.args[1] for call in sender.call_args_list])
         token, _, text, silent = sender.call_args.args
         self.assertEqual("0:TEST", token)
-        self.assertTrue(text.startswith(notify.PREFIX))
+        self.assertTrue(text.startswith(notify.prefix()))
         self.assertFalse(silent)
 
     def test_owner_ids_narrow_the_audience(self):

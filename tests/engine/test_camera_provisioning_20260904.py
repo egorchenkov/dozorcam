@@ -319,7 +319,8 @@ class BridgeProvisioningApi(unittest.TestCase):
     def test_scan_rejects_networks_outside_the_private_range(self) -> None:
         result = self.bridge.start_scan("8.8.8.0/24")
         self.assertFalse(result["ok"])
-        self.assertIn("не приватная", result["error"])
+        self.assertEqual("discovery.not_private", result["error_key"])
+        self.assertIn("not private", result["error"])
 
     def test_scan_marks_candidates_already_in_the_registry(self) -> None:
         """Кандидат на адресе заведённой камеры — это она сама, а не новая камера.

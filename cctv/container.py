@@ -32,7 +32,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import settings
+from . import i18n, settings
 
 STATUS_PATH = pathlib.Path(os.environ.get("CCTV_SUPERVISOR_STATUS", "/run/cctv/supervisor.json"))
 RUN_DIR = STATUS_PATH.parent
@@ -142,6 +142,16 @@ class Supervisor:
         self.children: list[Child] = []
         self.stopping = False
         self.last_problem = ""
+        # Язык строк для человека (журнал «нет конфига», статус для healthcheck):
+        # CCTV_LANG окружения или config.toml роли, иначе en.
+        self.lang = i18n.env_lang(self.base_env)
+
+    def resolve_lang(self, resolved: dict[str, str]) -> str:
+        self.lang = i18n.env_lang(resolved)
+        return self.lang
+
+    def reason(self, exc: Exception) -> str:
+        return exc.text(self.lang) if isinstance(exc, i18n.CodedError) else str(exc)
 
     # --- общее ---------------------------------------------------------
     def on_signal(self, signum, _frame) -> None:
@@ -155,7 +165,8 @@ class Supervisor:
     def problem(self, state: str, message: str) -> None:
         """Понятная причина простоя: в журнал один раз, в статус — каждый тик."""
         if message != self.last_problem:
-            log(f"{'нет конфига' if state == 'no_config' else state}: {message}")
+            prefix = i18n.t("supervisor.no_config", self.lang) if state == "no_config" else state
+            log(f"{prefix}: {message}")
             self.last_problem = message
         write_status(state, message, role=self.role)
 
@@ -239,7 +250,8 @@ class EngineSupervisor(Supervisor):
         try:
             resolved = settings.apply("engine", dict(env))
         except settings.SettingsError as exc:
-            return "no_config", str(exc)
+            return "no_config", self.reason(exc)
+        lang = self.resolve_lang(resolved)
         seed = pathlib.Path(resolved["CCTV_CAMERA_CONFIG"])
         managed = registry_file(resolved)
         # Мост пишет реестр сам (без root-сокета писаря) — в файл state.
@@ -250,13 +262,13 @@ class EngineSupervisor(Supervisor):
         try:
             data = json.loads(cameras.read_text())
             if not isinstance(data.get("cameras", []), list):
-                raise ValueError("ключ cameras должен быть списком")
+                raise ValueError(i18n.t("supervisor.cameras_not_list", lang))
             count = len(data.get("cameras", []))
         except FileNotFoundError:
             self.empty_config.write_text('{"cameras": []}\n')
             env["CCTV_CAMERA_CONFIG"] = str(self.empty_config)
-            log(f"нет конфига: {cameras} не найден — движок запущен без камер "
-                "(положите cameras.json в каталог конфига, цепочка перезапустится сама)")
+            log(i18n.t("supervisor.no_config", lang) + ": "
+                + i18n.t("supervisor.no_cameras_file", lang, path=str(cameras)))
             count = 0
         except (OSError, ValueError, AttributeError) as exc:
             return "no_config", f"{cameras}: {exc}"
@@ -281,7 +293,7 @@ class EngineSupervisor(Supervisor):
         if self.guard and os.access(self.guard, os.X_OK):
             check = subprocess.run([self.guard, "check"], env=env, capture_output=True, text=True)
             if check.returncode != 0:
-                reason = (check.stderr or check.stdout).strip() or f"код {check.returncode}"
+                reason = (check.stderr or check.stdout).strip() or f"exit code {check.returncode}"
                 log(f"{child.name}: retention-guard check не прошёл: {reason}")
                 child.next_start = time.monotonic() + child.backoff
                 child.backoff = min(child.backoff * 2, BACKOFF_MAX_SEC)
@@ -302,25 +314,26 @@ class BotSupervisor(Supervisor):
         env = dict(self.base_env)
         try:
             resolved = settings.apply("bot", dict(env))
+            self.resolve_lang(resolved)
             cfg = bot_config.load(resolved)
         except (settings.SettingsError, bot_config.ConfigError, ValueError) as exc:
-            return "no_config", str(exc)
+            return "no_config", self.reason(exc)
         if not TOKEN_RE.match(cfg.bot_token):
-            return "no_config", "CCTV_BOT_TOKEN не похож на токен Bot API (ожидается <id>:<ключ>)"
-        rejected = token_rejected(cfg.bot_token)
+            return "no_config", i18n.t("supervisor.bad_token", self.lang)
+        rejected = token_rejected(cfg.bot_token, self.lang)
         if rejected:
             return "no_config", rejected
         return env
 
 
-def token_rejected(token: str) -> str:
+def token_rejected(token: str, lang: str | None = None) -> str:
     """Причина, если Telegram отверг токен; сетевой сбой — не повод не запускаться."""
     try:
         with urllib.request.urlopen(f"{TELEGRAM_API}/bot{token}/getMe", timeout=10):
             return ""
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 404):
-            return f"Telegram отклонил CCTV_BOT_TOKEN (HTTP {exc.code}) — проверьте токен в .env"
+            return i18n.t("supervisor.token_rejected", lang or i18n.env_lang(), code=exc.code)
         log(f"getMe: HTTP {exc.code}, запускаю бота, он повторит сам")
         return ""
     except (urllib.error.URLError, OSError) as exc:
@@ -330,33 +343,35 @@ def token_rejected(token: str) -> str:
 
 def health() -> int:
     """Код 0 — роль работает; иначе причина в stdout (её покажет docker inspect)."""
-    try:
-        status = json.loads(STATUS_PATH.read_text())
-    except (OSError, ValueError):
-        print("супервизор ещё не записал статус")
-        return 1
-    age = time.time() - status.get("updated_at", 0)
-    if age > STATUS_STALE_SEC:
-        print(f"статус супервизора устарел на {age:.0f} с")
-        return 1
-    state = status.get("state")
-    if state != "running":
-        prefix = "нет конфига" if state == "no_config" else state
-        print(f"{prefix}: {status.get('detail', '')}")
-        return 1
-    dead = [name for name, alive in status.get("children", {}).items() if not alive]
-    if dead:
-        print("не работают: " + ", ".join(dead))
-        return 1
-    role = status.get("role")
     # Проверка — отдельный процесс (docker exec): config.toml сам в окружение не попадает,
     # а без него internal_tls из файла не виден и проверка шла бы к mTLS-мосту по http.
     env = dict(os.environ)
+    lang = i18n.env_lang(env)
+    try:
+        status = json.loads(STATUS_PATH.read_text())
+    except (OSError, ValueError):
+        print(i18n.t("supervisor.no_status", lang))
+        return 1
+    role = status.get("role")
     if role in settings.COMPONENTS:
         try:
             settings.apply(role, env)
         except settings.SettingsError:
             pass
+        lang = i18n.env_lang(env)
+    age = time.time() - status.get("updated_at", 0)
+    if age > STATUS_STALE_SEC:
+        print(i18n.t("supervisor.status_stale", lang, age=f"{age:.0f}"))
+        return 1
+    state = status.get("state")
+    if state != "running":
+        prefix = i18n.t("supervisor.no_config", lang) if state == "no_config" else state
+        print(f"{prefix}: {status.get('detail', '')}")
+        return 1
+    dead = [name for name, alive in status.get("children", {}).items() if not alive]
+    if dead:
+        print(i18n.t("supervisor.dead", lang, names=", ".join(dead)))
+        return 1
     tls = settings.internal_tls(env)
     if role == "engine" and tls:
         # Без клиентского сертификата mTLS-мост не ответит — хватает того, что порт слушает.
@@ -364,27 +379,27 @@ def health() -> int:
         try:
             socket.create_connection(("127.0.0.1", int(port)), timeout=5).close()
         except OSError as exc:
-            print(f"мост (mTLS) на :{port} не слушает: {exc}")
+            print(i18n.t("supervisor.bridge_tls_down", lang, port=port, reason=exc))
             return 1
-        print(f"ok: мост :{port} (mTLS)")
+        print(i18n.t("supervisor.bridge_tls_ok", lang, port=port))
     elif role == "engine":
         port = env.get("CCTV_PORT") or str(settings.DEFAULT_BRIDGE_PORT)
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/cameras", timeout=5) as reply:
                 cameras = len(json.loads(reply.read()).get("cameras", []))
         except (OSError, ValueError) as exc:
-            print(f"мост на :{port} не отвечает: {exc}")
+            print(i18n.t("supervisor.bridge_down", lang, port=port, reason=exc))
             return 1
-        print(f"ok: мост :{port}, камер {cameras}")
+        print(i18n.t("supervisor.bridge_ok", lang, port=port, cameras=cameras))
     elif role == "bot" and not tls:
         # С mTLS приёмник есть только при заданных сертификатах — тогда хватает живости процесса.
         port = int(env.get("CCTV_EVENTS_PORT") or settings.DEFAULT_EVENTS_PORT)
         try:
             socket.create_connection(("127.0.0.1", port), timeout=5).close()
         except OSError as exc:
-            print(f"приёмник событий :{port} не слушает: {exc}")
+            print(i18n.t("supervisor.events_down", lang, port=port, reason=exc))
             return 1
-        print(f"ok: бот, приёмник событий :{port}")
+        print(i18n.t("supervisor.bot_ok", lang, port=port))
     return 0
 
 

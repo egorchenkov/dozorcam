@@ -2,7 +2,41 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.1.3] — 2026-10-08
+
+Everything a person reads now comes from the language catalogs: English by default, Russian
+in full. Before, engine errors, the daily detector summary, the healthcheck and config errors
+were Russian whatever the bot language was.
+
+### Changed
+- Bot language: `/lang` → `CCTV_LANG` (`lang` in config.toml) → the owner's Telegram language
+  → English. The owner's Telegram language is a hint and no longer pins the language the way
+  `/lang` does; the first-run wizard also follows `CCTV_LANG` before the owner is set.
+- Engine refusals (camera scan, camera probe, registry writes) carry a catalog key
+  (`error_key`, `error_params`) next to the English `error` text; the bot shows them in its own
+  language. An older bridge without the key still works (its text is shown as is).
+- Engine-side text — the daily detector summary (`summary-<day>.txt`, `cctv diag-summary
+  --lang`), owner notifications (`cctv-notify`), supervisor log and healthcheck, config
+  errors — uses `CCTV_LANG` of that process, else English. For a Russian summary set `lang`
+  in `[common]` (or `[engine]`), not only in `[bot]`.
+- The topic passport shows the "registered" status from the catalog instead of a raw code.
+- `compose.yml` passes `CCTV_LANG` from `.env` to both containers: one line
+  `CCTV_LANG=ru` sets the language of the whole installation (empty — as before).
+
+### Added
+- Website (`docs/site`, en + ru) rebuilt as a landing page: who it is for, features of 0.1.2,
+  how a detection happens, install in 3 steps, bot commands and topics, mock-ups with the bot's
+  real texts, supported cameras, honest limits, "Built on Artel". Both READMEs gained "What it
+  does", "How to use" and the same block.
+- `scripts/site-sync.py`: the release version (`cctv/__init__.py`) and the platform name
+  (`docs/site/site.json`) live in `<!--site:KEY-->` marks on the site and in both READMEs.
+  `--check` runs in CI, in the release workflow (the tag must equal the version) and in the
+  export script: a version bump without the site and READMEs, or a release without its
+  CHANGELOG section, fails.
+- CI gate: no Russian string literals in `cctv/` outside `cctv/i18n/locales` (docstrings,
+  process logs and the transliteration table are allowlisted with reasons); en/ru catalogs
+  must have the same keys and placeholders, English must have no Cyrillic, and every key
+  used in code must exist.
 
 ## [0.1.2] — 2026-10-08
 

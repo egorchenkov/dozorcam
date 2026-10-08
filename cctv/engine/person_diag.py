@@ -33,6 +33,8 @@ import sys
 import threading
 import time
 
+from .. import i18n
+
 # Нижняя граница кандидата: ниже — фон (p95 шума сцены на камерах 0.1–0.2).
 CANDIDATE_MIN = float(os.environ.get("CCTV_DIAG_CANDIDATE_MIN", "0.20"))
 EPISODE_GAP_SEC = float(os.environ.get("CCTV_DIAG_EPISODE_GAP_SEC", "15"))
@@ -322,41 +324,48 @@ def _trace(at: float, kind: str, record: dict) -> dict:
     return trace
 
 
-REASON_TEXT = {"below_threshold": "ниже порога", "single_frame": "один кадр", "still": "неподвижный",
-               "gate_floor": "пол гейта", "camera_quiet": "камера молчит"}
+def _reason(code: str | None, lang: str) -> str:
+    key = f"diag.reason.{code}"
+    return i18n.t(key, lang) if i18n.has(key) else str(code)
 
 
-def render(summary: dict, day: str, tz: datetime.timezone | None = None) -> str:
+def render(summary: dict, day: str, tz: datetime.timezone | None = None, lang: str | None = None) -> str:
+    """Сводка человеку — на языке установки (CCTV_LANG, иначе en)."""
     tz = tz or parse_offset()
-    lines = [f"Сводка детектора за {day}"]
+    lang = lang or i18n.env_lang()
+    t = lambda key, **params: i18n.t(key, lang, **params)  # noqa: E731
+    lines = [t("diag.title", day=day)]
     for camera, stats in sorted(summary["cameras"].items()):
-        rejects = ", ".join(f"{REASON_TEXT.get(k, k)} {v}" for k, v in sorted(stats["rejects"].items())) or "нет"
-        confirm = f" (по сигналу камеры {stats['confirm_events']})" if stats["confirm_events"] else ""
-        signals = f"; сигналов камеры {stats['camera_signals']}" if stats["camera_signals"] else ""
-        lines.append(f"• {camera}: событий {stats['events']}{confirm}; отказов: {rejects}{signals}")
+        rejects = ", ".join(f"{_reason(k, lang)} {v}" for k, v in sorted(stats["rejects"].items())) \
+            or t("diag.none")
+        confirm = t("diag.confirm", count=stats["confirm_events"]) if stats["confirm_events"] else ""
+        signals = t("diag.signals", count=stats["camera_signals"]) if stats["camera_signals"] else ""
+        lines.append("• " + t("diag.camera_line", camera=camera, events=stats["events"], confirm=confirm,
+                              rejects=rejects, signals=signals))
     for report in summary["pairs"]:
         left, right = report["pair"]
-        lines.append(f"Пара {left}↔{right}: парных {report['paired']}, одиночных объяснимых "
-                     f"{report['single_explained']}, подозрительных {len(report['suspicious'])}")
+        lines.append(t("diag.pair_line", left=left, right=right, paired=report["paired"],
+                       single=report["single_explained"], suspicious=len(report["suspicious"])))
         for item in report["suspicious"]:
-            lines.append(f"  ? {local_time(item['at'], tz)} {item['camera']} {item.get('conf')}: "
-                         f"на {item['missing_on']} события нет, след: {_trace_text(item['trace'], tz)}")
+            lines.append("  ? " + t("diag.suspicious_line", time=local_time(item["at"], tz),
+                                    camera=item["camera"], conf=item.get("conf"), missing=item["missing_on"],
+                                    trace=_trace_text(item["trace"], tz, lang)))
     for item in summary["camera_signal_no_event"]:
-        partner = ", у соседки событие есть" if item["partner_event"] else ""
-        trace = f", след: {_trace_text(item['trace'], tz)}" if item["trace"] else ""
-        lines.append(f"  ? {local_time(item['at'], tz)} {item['camera']}: камера видела человека, "
-                     f"события нет{partner}{trace}")
-    lines.append("«?» — кандидат на пропуск для ручной проверки, не вердикт.")
+        partner = t("diag.partner_event") if item["partner_event"] else ""
+        trace = t("diag.trace", trace=_trace_text(item["trace"], tz, lang)) if item["trace"] else ""
+        lines.append("  ? " + t("diag.signal_no_event_line", time=local_time(item["at"], tz),
+                                camera=item["camera"], partner=partner, trace=trace))
+    lines.append(t("diag.footer"))
     return "\n".join(lines)
 
 
-def _trace_text(trace: list[dict], tz) -> str:
+def _trace_text(trace: list[dict], tz, lang: str) -> str:
     parts = []
     for item in trace:
         if item["kind"] == "camera_signal":
-            parts.append(f"сигнал камеры {local_time(item['at'], tz)}")
+            parts.append(i18n.t("diag.camera_signal", lang, time=local_time(item["at"], tz)))
         else:
-            text = f"{REASON_TEXT.get(item.get('reason'), item.get('reason'))} {item.get('max_conf')}"
+            text = f"{_reason(item.get('reason'), lang)} {item.get('max_conf')}"
             if item.get("snapshot"):
                 text += f" [{item['snapshot']}]"
             parts.append(text)
@@ -399,8 +408,9 @@ def main(argv: list[str] | None = None) -> int:
     """``python -m cctv diag-summary [--day YYYY-MM-DD] [--json]`` — сводка вручную."""
     from .. import settings
     parser = argparse.ArgumentParser(prog="cctv diag-summary")
-    parser.add_argument("--day", help="местная дата, по умолчанию сегодня")
-    parser.add_argument("--dir", help="каталог журнала (по умолчанию <state>/diag)")
+    parser.add_argument("--day", help="local date, today by default")
+    parser.add_argument("--dir", help="journal directory (default <state>/diag)")
+    parser.add_argument("--lang", help="summary language (default CCTV_LANG, else en)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     root = pathlib.Path(args.dir) if args.dir else settings.engine_state(
@@ -408,7 +418,8 @@ def main(argv: list[str] | None = None) -> int:
     journal = Journal(root)
     day = args.day or local_day(time.time(), journal.tz)
     summary = summarize(journal.read(day))
-    print(json.dumps(summary, ensure_ascii=False, indent=1) if args.json else render(summary, day, journal.tz))
+    print(json.dumps(summary, ensure_ascii=False, indent=1) if args.json
+          else render(summary, day, journal.tz, i18n.resolve(args.lang) if args.lang else None))
     return 0
 
 

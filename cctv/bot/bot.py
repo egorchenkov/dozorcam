@@ -66,19 +66,22 @@ TOPIC_ICON_CAMERA = "5357121491508928442"    # 👀 — площадка неи�
 TOPIC_ICON_CONSOLE = "5350554349074391003"  # 💻
 # Площадка узнаётся по имени темы и названию площадки, а не по camera_id: на
 # даче камер будет несколько, и каждая новая должна получать иконку дачи
-# сама, без правки кода. Порядок важен — совпадает первое вхождение.
+# сама, без правки кода. Порядок важен — совпадает первое вхождение. Слова
+# площадок — в каталоге (на всех языках сразу: имя камеры пишут как удобно).
 SITE_ICONS = (
-    ("дач", "5312486108309757006"),   # 🏠 дача
-    ("dacha", "5312486108309757006"),
-    ("house", "5312486108309757006"),
-    ("город", "5350548830041415279"),  # 🏛 город
-    ("city", "5350548830041415279"),
+    ("topic.site_house_words", "5312486108309757006"),  # 🏠 дача
+    ("topic.site_city_words", "5350548830041415279"),   # 🏛 город
 )
 ICONS_KEY = "topic_icons_v2"
 # Мастер первого запуска: владелец, группа, язык и одноразовый код — в state.
 OWNER_KEY = "owner_id"
 CHAT_KEY = "chat_id"
 LANG_KEY = "lang"
+# Язык Telegram владельца (language_code) — отдельно от явного выбора /lang:
+# явная настройка (/lang, CCTV_LANG) всегда сильнее подсказки клиента.
+# Значение — «<user_id>:<язык>»: подсказку меняет только тот же владелец,
+# иначе у двух владельцев с разными клиентами язык прыгал бы с каждым сообщением.
+OWNER_LANG_KEY = "owner_lang"
 SETUP_CODE_KEY = "setup_code"
 # Буквы без похожих (0/O, 1/I/L): код переписывают из журнала руками.
 SETUP_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -96,8 +99,9 @@ SCAN_POLL_SEC = 3
 MODEL_POLL_SEC = 1
 MODEL_WAIT_SEC = 120
 MODEL_FILES_SHOWN = 12
-# Ввод ручного порога: «auto» снимает его и возвращает автокалибровку.
-THRESHOLD_AUTO_WORDS = ("auto", "авто", "automatic", "автоматически")
+# Ввод ручного порога: «auto» (на любом языке каталога) снимает его и
+# возвращает автокалибровку.
+THRESHOLD_AUTO_WORDS = "input.auto_words"
 SCAN_WAIT_SEC = 180
 # Активация новых Hikvision: камера — до минуты (RSA-ключ, активация, ONVIF,
 # проба потока), пакет до 16 камер. Мост ведёт задание сам, бот только ждёт.
@@ -180,6 +184,12 @@ def confirm_words(key: str) -> set[str]:
     return {i18n.t(key, lang).lower() for lang in i18n.available()}
 
 
+def catalog_words(key: str) -> set[str]:
+    """Список слов через запятую (ключ каталога) на всех языках, в нижнем регистре."""
+    return {word.strip().lower() for lang in i18n.available()
+            for word in i18n.t(key, lang).split(",") if word.strip()}
+
+
 async def _run_tool(command: tuple[str, ...], log) -> bytes | None:
     """Запустить ffprobe/ffmpeg и вернуть stdout; любой сбой — None, не исключение.
 
@@ -256,7 +266,7 @@ def utcnow() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def human_time(value: str | None, lang: str = "ru") -> str:
+def human_time(value: str | None, lang: str = i18n.DEFAULT_LANG) -> str:
     """Показанное время — московское и читаемое.
 
     По проводу метки ходят в UTC (`...Z` или `+00:00`) — так их и оставляем: на
@@ -313,24 +323,15 @@ def unique_camera_id(base: str, taken) -> str:
 def topic_icon(*hints: str) -> str:
     """Иконка темы по площадке: дача, город или нейтральные «глаза»."""
     haystack = " ".join(h for h in hints if h).lower()
-    for needle, icon in SITE_ICONS:
-        if needle in haystack:
+    for key, icon in SITE_ICONS:
+        if any(needle in haystack for needle in catalog_words(key)):
             return icon
     return TOPIC_ICON_CAMERA
 
 
 def resolve_lang(code: str | None) -> str:
     """language_code Telegram (ru, pt-br, en-US…) → язык из каталога, иначе en."""
-    available = {name.lower(): name for name in i18n.available()}
-    raw = (code or "").strip().replace("_", "-").lower()
-    if raw in available:
-        return available[raw]
-    base = raw.split("-")[0]
-    if base in available:
-        return available[base]
-    # pt → pt-BR: другого португальского каталога нет
-    family = next((name for key, name in sorted(available.items()) if key.split("-")[0] == base), None)
-    return family or i18n.DEFAULT_LANG
+    return i18n.resolve(code)
 
 
 def new_setup_code() -> str:
@@ -382,8 +383,26 @@ class CctvBot:
 
     @property
     def lang(self) -> str:
-        """Язык интерфейса: выбранный командой /lang → CCTV_LANG → en."""
-        return resolve_lang(self.state.get_service(LANG_KEY) or getattr(self.cfg, "lang", ""))
+        """Язык интерфейса: /lang → CCTV_LANG → language_code владельца → en."""
+        owner_lang = (self.state.get_service(OWNER_LANG_KEY) or "").partition(":")[2]
+        return i18n.choose(self.state.get_service(LANG_KEY), getattr(self.cfg, "lang", ""), owner_lang)
+
+    def is_owner(self, user_id: int | None) -> bool:
+        """Владелец — назначенный мастером или из CCTV_OWNER_IDS (по умолчанию allow-list)."""
+        return user_id is not None and (user_id == self.owner_id
+                                        or user_id in getattr(self.cfg, "owner_ids", ()))
+
+    def note_language(self, user_id: int | None, language_code: str | None) -> None:
+        """Запомнить язык Telegram владельца — подсказка, когда явного выбора нет."""
+        found = i18n.match(language_code)
+        if not found or not self.is_owner(user_id):
+            return
+        saved = self.state.get_service(OWNER_LANG_KEY) or ""
+        saved_user = saved.partition(":")[0]
+        if saved == f"{user_id}:{found}" or (saved_user.lstrip("-").isdigit() and saved_user != str(user_id)
+                                              and self.is_owner(int(saved_user))):
+            return
+        self.state.set_service(OWNER_LANG_KEY, f"{user_id}:{found}")
 
     def _t(self, key: str, **params) -> str:
         return i18n.t(key, self.lang, **params)
@@ -392,6 +411,21 @@ class CctvBot:
         """Текст ошибки моста по коду; незнакомый код — общий текст сбоя."""
         return self._t(ERROR_TEXT.get(code or "", DEFAULT_ERROR_TEXT))
 
+    def _refusal(self, reply: dict, fallback: str) -> str:
+        """Отказ моста человеку: ключ каталога (error_key) — на языке бота, код
+        ошибки — по ERROR_TEXT; мост без ключа — его текст как есть."""
+        key = str(reply.get("error_key") or "")
+        if key and i18n.has(key):
+            params = reply.get("error_params")
+            try:
+                return self._t(key, **(params if isinstance(params, dict) else {}))
+            except (KeyError, IndexError, ValueError):
+                pass  # параметры не сошлись с каталогом — лучше текст моста, чем ничего
+        error = str(reply.get("error") or "")
+        if error in ERROR_TEXT:
+            return self._error(error)
+        return error or self._t(fallback)
+
     def _time(self, value: str | None) -> str:
         return human_time(value, self.lang)
 
@@ -399,7 +433,7 @@ class CctvBot:
     async def ensure_topic(self, camera_id: str, title: str, site: str = "") -> int:
         """Одна тема на камеру. Повторная регистрация идемпотентна."""
         if self.chat_id is None:
-            raise RuntimeError("группа не привязана — тему камеры завести негде")
+            raise RuntimeError("no group is bound — nowhere to create the camera topic")
         async with self._topic_lock:
             topic = self.state.topic_for(camera_id)
             if topic is not None:
@@ -420,7 +454,7 @@ class CctvBot:
             passport = await self.tg.send_message(
                 chat_id=self.chat_id,
                 message_thread_id=thread_id,
-                text=self.passport_text(camera_id, title, site, "registered"),
+                text=self.passport_text(camera_id, title, site, self._t("status.registered")),
                 reply_markup=self.control_markup(camera_id),
             )
             message_id = int(getattr(passport, "message_id", None) or passport["message_id"])
@@ -853,7 +887,7 @@ class CctvBot:
         if not started.get("ok"):
             await self.notify_console(self._t(
                 "scan.not_started",
-                reason=started.get("error") or self._t("scan.reason_unknown")))
+                reason=self._refusal(started, "scan.reason_unknown")))
             return
         scan_id = str(started.get("scan_id") or "")
         networks = ", ".join(started.get("networks") or []) or self._t("scan.default_networks")
@@ -871,7 +905,7 @@ class CctvBot:
         if status.get("status") != "done":
             await self.notify_console(self._t(
                 "scan.not_finished",
-                reason=status.get("error") or self._t("scan.bridge_timeout")))
+                reason=self._refusal(status, "scan.bridge_timeout")))
             return
         candidates = [c for c in status.get("candidates") or [] if c.get("host")]
         known = set()
@@ -1013,7 +1047,7 @@ class CctvBot:
             self.state.expect_input(user_id, camera_id or CONSOLE_CAMERA,
                                     f"creds|{host}|{camera_id}|{detect}", INPUT_TTL_SEC)
             return self._t("creds.failed",
-                           error=result.get("error") or self._t("creds.no_answer"))
+                           error=self._refusal(result, "creds.no_answer"))
         summary = result.get("summary") or {}
         token = str(result.get("probe_token") or "")
         if camera_id:
@@ -1024,7 +1058,7 @@ class CctvBot:
                 return self._error(exc.code)
             if not applied.get("ok"):
                 return self._t("registry.not_saved",
-                               error=applied.get("error") or self._t("registry.refused"))
+                               error=self._refusal(applied, "registry.refused"))
             asyncio.create_task(self._sync_after_restart())
             return self._t("creds.updated", detected=self.detected_text(summary))
         self.state.expect_input(user_id, CONSOLE_CAMERA, f"name|{token}|{host}", INPUT_TTL_SEC)
@@ -1071,7 +1105,7 @@ class CctvBot:
             return self._error(exc.code)
         if not added.get("ok"):
             return self._t("add.not_added",
-                           error=added.get("error") or self._t("registry.refused"))
+                           error=self._refusal(added, "registry.refused"))
         asyncio.create_task(self._sync_after_restart(first_frame=camera_id))
         self.log(f"камера {camera_id}: добавлена в реестр из чата")
         return self._t("add.added", title=title, camera_id=camera_id)
@@ -1229,7 +1263,7 @@ class CctvBot:
             return self._error(exc.code)
         if not applied.get("ok"):
             return self._t("registry.not_saved",
-                           error=applied.get("error") or self._t("registry.refused"))
+                           error=self._refusal(applied, "registry.refused"))
         asyncio.create_task(self._sync_after_restart())
         return self._t("detect.enabled" if enable else "detect.disabled")
 
@@ -1240,7 +1274,7 @@ class CctvBot:
             return self._error(exc.code)
         if not removed.get("ok"):
             return self._t("registry.not_deleted",
-                           error=removed.get("error") or self._t("registry.refused"))
+                           error=self._refusal(removed, "registry.refused"))
         await self.retire_topic(camera_id)
         await self.refresh_console()
         asyncio.create_task(self._sync_after_restart())
@@ -1318,7 +1352,7 @@ class CctvBot:
         silent = not self.state.motion_subscribers(event.camera_id)
         # cctv_pipeline шлёт конкретное имя источника ("recorded_main_person_detector"),
         # а не голое "person_detector" — точное сравнение молчало и подписывало
-        # подтверждённого человека как обычное "Движение".
+        # подтверждённого человека как обычное «Движение».
         is_person = "person_detector" in (event.source or "")
         caption = (f"{self._t('event.person' if is_person else 'event.motion')}: "
                    f"{self._time(event.occurred_at or utcnow())}")
@@ -1744,18 +1778,20 @@ class CctvBot:
             given = (args[0] if args else "").strip().upper().replace("-", "")
             if self._code_attempts.get(user_id, 0) >= SETUP_CODE_ATTEMPTS:
                 return None
+            # Владельца ещё нет: явный язык установки (/lang, CCTV_LANG), иначе язык клиента.
+            lang = i18n.choose(self.state.get_service(LANG_KEY), getattr(self.cfg, "lang", ""), language_code)
             if not code or not given:
-                return i18n.t("wizard.need_code", resolve_lang(language_code))
+                return i18n.t("wizard.need_code", lang)
             import hmac
 
             if not hmac.compare_digest(given, code):
                 self._code_attempts[user_id] = self._code_attempts.get(user_id, 0) + 1
                 self.log(f"мастер: неверный код от {user_id}")
-                return i18n.t("wizard.bad_code", resolve_lang(language_code))
+                return i18n.t("wizard.bad_code", lang)
             self.state.set_service(OWNER_KEY, str(user_id))
             self.state.delete_service(SETUP_CODE_KEY)
-            if not self.state.get_service(LANG_KEY) and not getattr(self.cfg, "lang", ""):
-                self.state.set_service(LANG_KEY, resolve_lang(language_code))
+            self.state.delete_service(OWNER_LANG_KEY)
+            self.note_language(user_id, language_code)
             self.log(f"мастер: владелец назначен ({user_id}), язык {self.lang}")
             return self._t("wizard.owner_set") + "\n\n" + self._t("wizard.add_to_group")
         if not self.allowed(user_id):
@@ -2130,7 +2166,7 @@ class CctvBot:
 
     async def _apply_threshold(self, camera_id: str, text: str) -> str:
         raw = (text or "").strip().lower()
-        if raw in THRESHOLD_AUTO_WORDS:
+        if raw in catalog_words(THRESHOLD_AUTO_WORDS):
             return await self._set_threshold(camera_id, None)
         try:
             value = float(raw.replace(",", "."))

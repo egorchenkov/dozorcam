@@ -25,6 +25,8 @@ import sys
 import tomllib
 from typing import MutableMapping
 
+from . import i18n
+
 DEFAULT_CONFIG_DIR = "/etc/cctv"
 DEFAULT_STORAGE_ROOT = "/var/lib/cctv"
 DEFAULT_STATE_DIR = DEFAULT_STORAGE_ROOT + "/state"
@@ -40,8 +42,10 @@ DEFAULT_BRIDGE_PORT = 8780
 DEFAULT_EVENTS_PORT = 8781
 
 
-class SettingsError(RuntimeError):
-    """Конфиг нечитаем или противоречив — запуск невозможен."""
+class SettingsError(i18n.CodedError, RuntimeError):
+    """Конфиг нечитаем или противоречив — запуск невозможен (ключи config.*)."""
+
+    prefix = "config"
 
 
 def config_dir(env: MutableMapping[str, str] | None = None) -> pathlib.Path:
@@ -97,7 +101,7 @@ def _scalar(key: str, value) -> str:
         return str(value)
     if isinstance(value, list) and all(isinstance(item, (int, float, str)) for item in value):
         return " ".join(str(item) for item in value)
-    raise SettingsError(f"{key}: значение должно быть строкой, числом, булевым или списком")
+    raise SettingsError("bad_value", key=key)
 
 
 def _flatten(table: dict, source: str) -> dict[str, str]:
@@ -117,13 +121,13 @@ def _read_toml(path: pathlib.Path) -> dict:
     except FileNotFoundError:
         return {}
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise SettingsError(f"{path}: {exc}") from exc
+        raise SettingsError("unreadable", path=str(path), reason=str(exc)) from exc
 
 
 def load(component: str, env: MutableMapping[str, str] | None = None) -> dict[str, str]:
     """Значения CCTV_* для компонента из каталога конфига (без учёта окружения)."""
     if component not in COMPONENTS:
-        raise SettingsError(f"неизвестный компонент {component!r}")
+        raise SettingsError("unknown_component", name=repr(component))
     env = os.environ if env is None else env
     root = config_dir(env)
     values: dict[str, str] = {}
@@ -135,12 +139,12 @@ def load(component: str, env: MutableMapping[str, str] | None = None) -> dict[st
         if name == SECRETS_FILE:
             mode = path.stat().st_mode & 0o777
             if mode & 0o077:
-                print(f"[cctv] внимание: {path} доступен не только владельцу ({mode:04o})",
-                      file=sys.stderr)
+                print("[cctv] " + i18n.t("config.secrets_mode", i18n.env_lang(env),
+                                         path=str(path), mode=f"{mode:04o}"), file=sys.stderr)
         unknown = [key for key, value in data.items()
                    if isinstance(value, dict) and key not in ("common", *COMPONENTS)]
         if unknown:
-            raise SettingsError(f"{path}: неизвестные разделы {', '.join(sorted(unknown))}")
+            raise SettingsError("unknown_sections", path=str(path), sections=", ".join(sorted(unknown)))
         values.update(_flatten(data, name))
         values.update(_flatten(data.get("common", {}), f"{name}[common]"))
         values.update(_flatten(data.get(component, {}), f"{name}[{component}]"))

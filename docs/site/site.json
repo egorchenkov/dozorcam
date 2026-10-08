@@ -1,0 +1,6 @@
+{
+  "_comment": "Values shared by the website (docs/site) and both READMEs. Edit here, then run scripts/site-sync.py. The version is not stored here: it comes from cctv/__init__.py.",
+  "platform.en": "Artel",
+  "platform.ru": "Артель",
+  "platform.ru_in": "Артели"
+}

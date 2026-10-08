@@ -32,7 +32,7 @@ import sys
 import threading
 import urllib.parse
 
-from .. import settings
+from .. import i18n, settings
 
 SOCKET_PATH = os.environ.get("CCTV_PROVISION_SOCKET", "/run/cctv/provision.sock")
 CONFIG_PATH = pathlib.Path(os.environ.get("CCTV_CAMERA_CONFIG") or settings.config_dir() / settings.CAMERAS_FILE)
@@ -47,8 +47,10 @@ MAX_CAMERAS = 32
 CAMERA_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
-class Invalid(ValueError):
-    """Запись не прошла проверку. Текст безопасен для показа человеку."""
+class Invalid(i18n.CodedError, ValueError):
+    """Запись не прошла проверку. Ключ каталога (registry.*) безопасен для показа человеку."""
+
+    prefix = "registry"
 
 
 def mask(url: str | None) -> str:
@@ -58,23 +60,23 @@ def mask(url: str | None) -> str:
 def _private_host(url: str, schemes: tuple[str, ...]) -> str:
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in schemes or not parts.hostname:
-        raise Invalid(f"адрес не {'/'.join(schemes)}: {mask(url)}")
+        raise Invalid("bad_scheme", schemes="/".join(schemes), url=mask(url))
     try:
         address = ipaddress.ip_address(parts.hostname)
     except ValueError:
-        raise Invalid("адрес камеры задаётся IP, а не именем") from None
+        raise Invalid("host_not_ip") from None
     if not (address.is_private or address.is_loopback):
-        raise Invalid("камера может быть только в приватной сети")
+        raise Invalid("not_private")
     return parts.hostname
 
 
 def validate(camera: dict) -> dict:
     """Белый список полей: всё лишнее не сохраняется, всё кривое — отказ."""
     if not isinstance(camera, dict):
-        raise Invalid("запись камеры должна быть объектом")
+        raise Invalid("camera_not_object")
     camera_id = str(camera.get("camera_id") or "")
     if not CAMERA_ID_RE.match(camera_id):
-        raise Invalid("camera_id: латиница, цифры, дефис и подчёркивание")
+        raise Invalid("bad_camera_id")
     title = str(camera.get("title") or camera_id).strip()[:64]
     site = str(camera.get("site") or camera_id).strip()[:64]
     rtsp_url = str(camera.get("rtsp_url") or "")
@@ -84,12 +86,12 @@ def validate(camera: dict) -> dict:
     detect = camera.get("detect_rtsp_url")
     if detect:
         if _private_host(str(detect), ("rtsp",)) != host:
-            raise Invalid("поток детектора должен быть у той же камеры")
+            raise Invalid("detect_other_camera")
         entry["detect_rtsp_url"] = str(detect)
     snapshot = camera.get("snapshot_url")
     if snapshot:
         if _private_host(str(snapshot), ("http", "https")) != host:
-            raise Invalid("снимок должен браться у той же камеры")
+            raise Invalid("snapshot_other_camera")
         entry["snapshot_url"] = str(snapshot)
         for key in ("snapshot_user", "snapshot_password"):
             value = camera.get(key)
@@ -100,27 +102,27 @@ def validate(camera: dict) -> dict:
         try:
             value = float(threshold)
         except (TypeError, ValueError):
-            raise Invalid("motion_threshold должен быть числом") from None
+            raise Invalid("not_number", field="motion_threshold") from None
         if not 0 < value <= 100:
-            raise Invalid("motion_threshold вне диапазона 0..100")
+            raise Invalid("out_of_range", field="motion_threshold", range="0..100")
         entry["motion_threshold"] = value
     gate = camera.get("person_gate_threshold")
     if gate is not None:
         try:
             value = float(gate)
         except (TypeError, ValueError):
-            raise Invalid("person_gate_threshold должен быть числом") from None
+            raise Invalid("not_number", field="person_gate_threshold") from None
         if not 0 < value <= 100:
-            raise Invalid("person_gate_threshold вне диапазона 0..100")
+            raise Invalid("out_of_range", field="person_gate_threshold", range="0..100")
         entry["person_gate_threshold"] = value
     aspect = camera.get("snapshot_aspect")
     if aspect is not None:
         try:
             value = float(aspect)
         except (TypeError, ValueError):
-            raise Invalid("snapshot_aspect должен быть числом (ширина/высота)") from None
+            raise Invalid("not_number", field="snapshot_aspect") from None
         if not 0.2 <= value <= 5:
-            raise Invalid("snapshot_aspect вне разумного диапазона 0.2..5")
+            raise Invalid("out_of_range", field="snapshot_aspect", range="0.2..5")
         entry["snapshot_aspect"] = value
     if camera.get("person_detection") is True:
         entry["person_detection"] = True
@@ -134,7 +136,7 @@ def load(path: pathlib.Path | None = None) -> dict:
     except FileNotFoundError:
         return {"cameras": []}
     if not isinstance(data, dict) or not isinstance(data.get("cameras"), list):
-        raise Invalid("реестр повреждён: ожидался объект с ключом cameras")
+        raise Invalid("registry_corrupt")
     return data
 
 
@@ -214,7 +216,7 @@ def apply(command: dict, *, path: pathlib.Path | None = None,
                       if c.get("camera_id") == entry["camera_id"]), None)
         if index is None:
             if len(cameras) >= MAX_CAMERAS:
-                raise Invalid(f"в реестре уже {MAX_CAMERAS} камер")
+                raise Invalid("registry_full", limit=MAX_CAMERAS)
             cameras.append(entry)
             action = "added"
         else:
@@ -231,14 +233,14 @@ def apply(command: dict, *, path: pathlib.Path | None = None,
     if name == "delete":
         camera_id = str(command.get("camera_id") or "")
         if not CAMERA_ID_RE.match(camera_id):
-            raise Invalid("camera_id не распознан")
+            raise Invalid("bad_camera_id")
         kept = [c for c in cameras if c.get("camera_id") != camera_id]
         if len(kept) == len(cameras):
             return {"ok": False, "error": "not_found"}, False
         data["cameras"] = kept
         save(data, path, backups)
         return {"ok": True, "action": "deleted", "camera_id": camera_id}, True
-    raise Invalid(f"неизвестная команда: {name!r}")
+    raise Invalid("unknown_command", name=repr(name))
 
 
 def restart_chain(units=RESTART_UNITS, *, runner=subprocess.run, delay: float = RESTART_DELAY_SEC,
@@ -300,12 +302,12 @@ def handle(conn: socket.socket, log=print) -> None:
         try:
             command = json.loads(b"".join(chunks).split(b"\n", 1)[0] or b"{}")
             if not isinstance(command, dict):
-                raise Invalid("команда должна быть объектом")
+                raise Invalid("command_not_object")
             reply, restart = apply(command)
         except Invalid as exc:
-            reply, restart = {"ok": False, "error": str(exc)}, False
+            reply, restart = exc.reply(), False
         except Exception as exc:  # содержимое команды в журнал не попадает
-            reply, restart = {"ok": False, "error": "внутренняя ошибка писаря"}, False
+            reply, restart = Invalid("writer_failed", reason=type(exc).__name__).reply(), False
             log(f"писарь: {type(exc).__name__}")
         try:
             conn.sendall((json.dumps(reply, ensure_ascii=False) + "\n").encode())

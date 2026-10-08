@@ -16,21 +16,23 @@ import pathlib
 import urllib.parse
 from dataclasses import dataclass
 
-from .. import settings
+from .. import i18n, settings
 
 DEFAULT_STATE_DIR = settings.DEFAULT_STATE_DIR
 DEFAULT_RUNTIME_DIR = settings.DEFAULT_BUFFER_DIR + "/bot"
 DEFAULT_BRIDGE_URL = f"http://127.0.0.1:{settings.DEFAULT_BRIDGE_PORT}"
 
 
-class ConfigError(RuntimeError):
-    """Старт невозможен: окружение задано неполно или противоречиво."""
+class ConfigError(i18n.CodedError, RuntimeError):
+    """Старт невозможен: окружение задано неполно или противоречиво (ключи config.*)."""
+
+    prefix = "config"
 
 
 def _require(env: dict[str, str], key: str) -> str:
     value = (env.get(key) or "").strip()
     if not value:
-        raise ConfigError(f"не задана обязательная переменная {key}")
+        raise ConfigError("required", key=key)
     return value
 
 
@@ -41,7 +43,7 @@ def _int(env: dict[str, str], key: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError as exc:
-        raise ConfigError(f"{key} должен быть числом, получено {raw!r}") from exc
+        raise ConfigError("not_number", key=key, value=repr(raw)) from exc
 
 
 def _allow_list(raw: str, key: str = "CCTV_ALLOWED_USER_IDS") -> frozenset[int]:
@@ -50,18 +52,16 @@ def _allow_list(raw: str, key: str = "CCTV_ALLOWED_USER_IDS") -> frozenset[int]:
         try:
             users.add(int(chunk))
         except ValueError as exc:
-            raise ConfigError(
-                f"{key} принимает только числовые Telegram id, получено {chunk!r}"
-            ) from exc
+            raise ConfigError("not_user_id", key=key, value=repr(chunk)) from exc
     if not users:
-        raise ConfigError(f"{key} пуст: некому пользоваться ботом")
+        raise ConfigError("no_users", key=key)
     return frozenset(users)
 
 
 def _existing_file(path: str, key: str) -> pathlib.Path:
     resolved = pathlib.Path(path).expanduser()
     if not resolved.is_file():
-        raise ConfigError(f"{key}: файл не найден — {resolved}")
+        raise ConfigError("file_missing", key=key, path=str(resolved))
     return resolved
 
 
@@ -126,17 +126,16 @@ def load(env: dict[str, str] | None = None) -> Config:
     base_url = (env.get("CCTV_BRIDGE_URL") or "").strip().rstrip("/")
     if not base_url:
         if tls:
-            raise ConfigError("не задана обязательная переменная CCTV_BRIDGE_URL")
+            raise ConfigError("required", key="CCTV_BRIDGE_URL")
         base_url = DEFAULT_BRIDGE_URL
     parts = urllib.parse.urlsplit(base_url)
     if tls and parts.scheme != "https":
-        raise ConfigError("CCTV_BRIDGE_URL обязан быть https:// — mTLS без TLS невозможен")
+        raise ConfigError("bridge_needs_https")
     if not tls:
         if parts.scheme != "http":
-            raise ConfigError("без CCTV_INTERNAL_TLS мост адресуется http:// по loopback")
+            raise ConfigError("bridge_needs_http")
         if not settings.is_loopback_host(parts.hostname):
-            raise ConfigError("без CCTV_INTERNAL_TLS мост допускается только на loopback "
-                              "(127.0.0.1); для другого узла включите CCTV_INTERNAL_TLS=1")
+            raise ConfigError("bridge_not_loopback")
 
     state_dir = pathlib.Path(env.get("CCTV_STATE_DIR") or DEFAULT_STATE_DIR)
     runtime_dir = pathlib.Path(env.get("CCTV_RUNTIME_DIR") or DEFAULT_RUNTIME_DIR)
@@ -146,12 +145,9 @@ def load(env: dict[str, str] | None = None) -> Config:
     events_key = env.get("CCTV_EVENTS_KEY") if tls else None
     events_ca = env.get("CCTV_EVENTS_CLIENT_CA") if tls else None
     if any((events_cert, events_key, events_ca)) and not all((events_cert, events_key, events_ca)):
-        raise ConfigError(
-            "приёмник событий включается тройкой CCTV_EVENTS_CERT/KEY/CLIENT_CA: "
-            "без клиентского CA он принимал бы неаутентифицированные события"
-        )
+        raise ConfigError("events_triplet")
     if not tls and not settings.is_loopback_host(events_host):
-        raise ConfigError("без CCTV_INTERNAL_TLS приёмник событий слушает только loopback")
+        raise ConfigError("events_not_loopback")
 
     if tls:
         client_cert = _existing_file(_require(env, "CCTV_BRIDGE_CLIENT_CERT"), "CCTV_BRIDGE_CLIENT_CERT")
@@ -168,7 +164,7 @@ def load(env: dict[str, str] | None = None) -> Config:
     try:
         chat_id = int(chat_raw) if chat_raw else None
     except ValueError as exc:
-        raise ConfigError(f"CCTV_CHAT_ID должен быть числом, получено {chat_raw!r}") from exc
+        raise ConfigError("not_number", key="CCTV_CHAT_ID", value=repr(chat_raw)) from exc
 
     return Config(
         bot_token=_require(env, "CCTV_BOT_TOKEN"),

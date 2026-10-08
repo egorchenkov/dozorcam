@@ -15,8 +15,16 @@ jobs:
   test:
     uses: ./.github/workflows/ci.yml
 
+  # Тег vX.Y.Z = __version__ = версия на сайте и в обоих README (иначе образ не собирается).
+  version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: test "v$(python3 scripts/site-sync.py --print-version)" = "$GITHUB_REF_NAME"
+      - run: python3 scripts/site-sync.py --check
+
   image:
-    needs: test
+    needs: [test, version]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

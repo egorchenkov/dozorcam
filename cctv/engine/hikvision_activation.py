@@ -137,7 +137,7 @@ _RCON = (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36)
 
 def _expand_key(key: bytes) -> list[list[int]]:
     if len(key) not in (16, 24, 32):
-        raise ValueError("AES-ключ — 16, 24 или 32 байта")
+        raise ValueError("AES key must be 16, 24 or 32 bytes")
     nk = len(key) // 4
     rounds = nk + 6
     words = [list(key[4 * i:4 * i + 4]) for i in range(nk)]
@@ -197,7 +197,7 @@ def pkcs7_pad(data: bytes) -> bytes:
 def pkcs7_unpad(data: bytes) -> bytes:
     n = data[-1] if data else 0
     if not 1 <= n <= 16 or data[-n:] != bytes([n]) * n:
-        raise ValueError("неверное дополнение PKCS7")
+        raise ValueError("bad PKCS7 padding")
     return data[:-n]
 
 
@@ -206,7 +206,7 @@ def aes_encrypt(key: bytes, data: bytes, *, iv: bytes | None = None, pad: bool =
     keys = _expand_key(key)
     data = pkcs7_pad(data) if pad else data
     if len(data) % 16:
-        raise ValueError("длина без дополнения не кратна блоку")
+        raise ValueError("unpadded length is not a multiple of the block")
     out, prev = bytearray(), iv
     for i in range(0, len(data), 16):
         block = data[i:i + 16]
@@ -222,7 +222,7 @@ def aes_encrypt(key: bytes, data: bytes, *, iv: bytes | None = None, pad: bool =
 def aes_decrypt(key: bytes, data: bytes, *, iv: bytes | None = None, pad: bool = True) -> bytes:
     keys = _expand_key(key)
     if not data or len(data) % 16:
-        raise ValueError("шифртекст не кратен блоку")
+        raise ValueError("ciphertext is not a multiple of the block")
     out, prev = bytearray(), iv
     for i in range(0, len(data), 16):
         block = data[i:i + 16]
@@ -327,7 +327,7 @@ def rsa_encrypt_pkcs1(n: int, data: bytes, e: int = RSA_E) -> int:
     size = (n.bit_length() + 7) // 8
     pad_len = size - 3 - len(data)
     if pad_len < 8:
-        raise ValueError("данные длиннее ключа")
+        raise ValueError("data is longer than the key")
     padding = bytes(secrets.choice(range(1, 256)) for _ in range(pad_len))
     return pow(int.from_bytes(b"\x00\x02" + padding + b"\x00" + data, "big"), e, n)
 
@@ -345,7 +345,7 @@ def decrypt_password(challenge: str, encrypted: str, iv: bytes | None) -> str:
     cipher = bytes.fromhex(base64.b64decode(encrypted).decode())
     plain = aes_decrypt(bytes.fromhex(challenge), cipher, iv=iv).decode()
     if not plain.startswith(challenge[:16]):
-        raise ValueError("префикс challenge не совпал")
+        raise ValueError("challenge prefix mismatch")
     return plain[16:]
 
 

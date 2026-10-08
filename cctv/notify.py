@@ -29,10 +29,17 @@ import time
 import urllib.error
 import urllib.request
 
-PREFIX = "🔴 Видеонаблюдение:"
+from . import i18n
+
+PREFIX_KEY = "owner_notify.prefix"
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 ATTEMPTS = 3
 BACKOFF_S = (2, 8)
+
+
+def prefix(env=None) -> str:
+    """«🔴 Видеонаблюдение:» на языке установки (CCTV_LANG, иначе en)."""
+    return i18n.t(PREFIX_KEY, i18n.env_lang(env))
 
 
 def log(msg: str) -> None:
@@ -107,10 +114,10 @@ def send_one(token: str, chat_id: str, text: str, silent: bool) -> bool:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="уведомление владельцу личкой от бота")
-    parser.add_argument("--text", required=True, help="человеческий текст без техники")
-    parser.add_argument("--detail", default="", help="техника: только в журнал процесса")
-    parser.add_argument("--silent", action="store_true", help="без звука (информация)")
+    parser = argparse.ArgumentParser(description="notify the bot owner in a private chat")
+    parser.add_argument("--text", required=True, help="human-readable text, no internals")
+    parser.add_argument("--detail", default="", help="internals: process log only")
+    parser.add_argument("--silent", action="store_true", help="no sound (information)")
     parser.add_argument("--dry-run", action="store_true")
     try:
         opts = parser.parse_args(argv)
@@ -124,7 +131,7 @@ def main(argv=None) -> int:
         return 2
     if opts.detail:
         log(f"подробности: {opts.detail}")
-    text = f"{PREFIX} {opts.text}"
+    text = f"{prefix()} {opts.text}"
     window = float(os.environ.get("CCTV_NOTIFY_WINDOW_S", "300"))
     if seen_recently(text, time.time(), dedup_path(), window):
         print("cctv-notify: result=deduped")

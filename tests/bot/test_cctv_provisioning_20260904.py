@@ -182,7 +182,8 @@ class ProvisioningTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_rejected_credentials_do_not_create_a_camera(self) -> None:
         thread = await self.console()
-        self.probe_reply = {"ok": False, "error": "камера не приняла логин или пароль"}
+        self.probe_reply = {"ok": False, "error": "the camera did not accept the login or password",
+                            "error_key": "discovery.auth_failed", "error_params": {}}
         await self.bot.on_callback(OWNER, thread,
                                    self.button(bot_module.CONSOLE_CAMERA, "cand", "192.0.2.11"))
         answer = await self.bot.on_text(OWNER, thread, f"admin {PASSWORD}", None, 5)

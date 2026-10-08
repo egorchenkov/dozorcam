@@ -50,7 +50,27 @@ class ContainerTest(unittest.TestCase):
         self.assertIsInstance(env, dict)
         self.assertEqual(json.loads(pathlib.Path(env["CCTV_CAMERA_CONFIG"]).read_text()), {"cameras": []})
         self.assertEqual(env["CCTV_RUNTIME_CAMERA_CONFIG"], str(self.run_dir / "cameras.proxy.json"))
+        self.assertIn("no config", out.getvalue())
+
+    def test_supervisor_speaks_the_configured_language(self) -> None:
+        """lang из config.toml ([common]) — и журнал супервизора, и healthcheck по-русски."""
+        (self.config / "config.toml").write_text('[common]\nlang = "ru"\n')
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.engine().prepare()
         self.assertIn("нет конфига", out.getvalue())
+        self.assertIn("движок запущен без камер", out.getvalue())
+        container.write_status("no_config", "x", role="engine")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(container.health(), 1)
+        self.assertIn("нет конфига: x", out.getvalue())
+
+    def test_bot_config_error_in_configured_language(self) -> None:
+        (self.config / "config.toml").write_text('[bot]\nlang = "ru"\nchat_id = -100777\nallowed_user_ids = [7]\n')
+        state, message = container.BotSupervisor().prepare()
+        self.assertEqual(("no_config", "не задана обязательная переменная CCTV_BOT_TOKEN"), (state, message))
+        os.environ["CCTV_LANG"] = "en"  # окружение сильнее файла
+        state, message = container.BotSupervisor().prepare()
+        self.assertEqual("required variable CCTV_BOT_TOKEN is not set", message)
 
     def test_engine_prefers_registry_written_from_chat(self) -> None:
         """Э4: после первой камеры из чата реестр живёт в state, а не в каталоге конфига."""
@@ -105,10 +125,10 @@ class ContainerTest(unittest.TestCase):
         self.assertNotIn("CCTV_CHAT_ID", env)
 
     def test_health_reports_no_config_reason(self) -> None:
-        container.write_status("no_config", "не задана CCTV_BOT_TOKEN", role="bot")
+        container.write_status("no_config", "required variable CCTV_BOT_TOKEN is not set", role="bot")
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(container.health(), 1)
-        self.assertIn("нет конфига: не задана CCTV_BOT_TOKEN", out.getvalue())
+        self.assertIn("no config: required variable CCTV_BOT_TOKEN is not set", out.getvalue())
 
     def test_health_rejects_stale_status_and_dead_children(self) -> None:
         container.write_status("running", role="engine", children={"bridge": False})
@@ -137,7 +157,7 @@ class ContainerTest(unittest.TestCase):
         listener.close()
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(container.health(), 1)
-        self.assertIn("не слушает", out.getvalue())
+        self.assertIn("is not listening", out.getvalue())
 
     def test_crashing_child_backs_off_instead_of_tight_loop(self) -> None:
         child = container.Child("crash", [sys.executable, "-c", "raise SystemExit(3)"])

@@ -7,8 +7,33 @@ recording buffer from your IP cameras, looks for people (motion gate → YOLO) a
 snapshots and clips to a Telegram forum group: one topic per camera plus a "Control"
 topic with system status. No cloud: video lives in the node's RAM buffer and in your chat.
 
+Current release: **<!--site:version-->0.1.3<!--/site-->** ·
+[Changelog](CHANGELOG.md) · [Releases](https://github.com/egorchenkov/dozorcam/releases)
+
 > Provided **as is** (see [CONTRIBUTING](CONTRIBUTING.md)): a one-person home project,
 > no support guarantees.
+
+## What it does
+
+- **People, not motion.** Motion gate with a per-camera noise floor, then an ONNX person
+  detector (YOLOX-Tiny bundled, YOLOv5/YOLOv8 optional) with a per-camera threshold
+  calibrated against the scene noise.
+- **Confirmed by the camera.** Cameras with their own person detection (Hikvision, ONVIF
+  FieldDetector) can gate the detector or, since 0.1.2, confirm a person
+  (`human_gate_mode = "confirm"`): small or half-hidden figures are not missed.
+- **Still objects are not people.** A box is checked against the same spot seconds earlier;
+  a bag or a bush that never moves is rejected. A camera can be told to trust its own
+  silence (`human_quiet_cameras`), so an IR-lit bush at dawn does not become a person.
+- **Snapshots and clips in Telegram.** Snapshot with the person boxed in the camera topic,
+  a clip around that moment on a tap, a fresh frame or a 30 s clip on demand.
+- **Control from the chat.** "Control" topic with every camera's state and storage, detector
+  model, thresholds; `/add` finds cameras and even activates a new Hikvision.
+- **Explains its decisions.** A diagnostic journal of rejected candidates with the reason and
+  a daily summary with possible misses (`python -m cctv diag-summary`).
+- **One language throughout.** Since 0.1.3 everything a person reads — the bot, camera
+  search and add errors, the daily summary, the healthcheck — is English or Russian, as you
+  choose: `CCTV_LANG` for the whole installation or `/lang` in the chat.
+- **No cloud.** No account, no telemetry; the long-term copy is your own chat.
 
 ## Install in 3 commands
 
@@ -27,8 +52,9 @@ not reachable, `up` builds the same image locally from the `Dockerfile`.
 The rest happens in Telegram:
 
 1. `docker compose logs bot | grep SETUP` prints a one-time code; send `/start <code>`
-   to the bot in a private chat — you become the owner. Interface language follows your
-   Telegram language: English or Russian (`/lang en|ru` to change).
+   to the bot in a private chat — you become the owner. Interface language: `CCTV_LANG`
+   in `.env` (`en` or `ru`) for the whole installation, otherwise your Telegram language,
+   otherwise English; `/lang en|ru` in the chat overrides both.
 2. Create a group with **Topics** enabled, add the bot as an admin with "Manage topics"
    and "Delete messages". The bot creates the "Control" topic itself and tells you if a
    permission is missing (`/setup` to retry).
@@ -38,6 +64,26 @@ The rest happens in Telegram:
    the first frame. Camera outside discovery: `/add rtsp://host:port/path [rtsp://… detector stream]`.
 4. Optional: `/model` — person detector model (family and file), switched on the fly with
    automatic rollback; see [docs/models.md](docs/models.md).
+
+## How to use
+
+| Command | What it does |
+|---|---|
+| `/start <code>` | once, in a private chat: makes you the owner |
+| `/setup` | finishes the group setup, tells which admin right is missing |
+| `/add` | searches for cameras; `/add rtsp://host:port/path` for a camera outside the search |
+| `/menu` | cameras and links to their topics |
+| `/model` | person detector model, switched on the fly with automatic rollback |
+| `/lang en\|ru` | interface language (default: `CCTV_LANG`, else your Telegram language, else English) |
+
+- **Camera topic** — events arrive here. The pinned panel shows stream and detector state;
+  buttons: 📷 Frame, 🎞 Clip 30 s, 🔄 Status, 🔔 motion notifications, ⏸ Pause, ✏️ Name,
+  ⚙️ Settings, 🗑 Retire. A new camera starts with person detection off — turn it on in
+  ⚙️ Settings after a look at the scene.
+- **Clips** — "🎞 Clip around this frame" under every event cuts the clip from the buffer
+  around the moment the person was seen, even if the detector was a few seconds behind.
+- **"Control" topic** — state of all cameras and storage, ➕ Add camera, 🧠 Detector model,
+  🎯 Thresholds (auto-calibration or manual per camera).
 
 ## Cameras
 
@@ -152,6 +198,15 @@ python3.12 -m venv .venv
 Contract tests need `ffmpeg`, `openssl` and `curl` and are skipped without them.
 Multi-arch image without QEMU: `docker buildx build --platform linux/arm64,linux/amd64 -t dozorcam:dev .`
 (needs the containerd image store, default since Docker 29, or `--output type=oci`).
+
+## Built on <!--site:platform.en-->Artel<!--/site-->
+
+> **🧩 <!--site:platform.en-->Artel<!--/site--> — a universal platform for building apps through Telegram bots**
+>
+> Dozorcam is built with <!--site:platform.en-->Artel<!--/site-->, a universal platform for building applications
+> through Telegram bots, developed by Roman Egorchenkov. The platform's source code will be
+> published on GitHub soon — follow the updates in his repositories:
+> [github.com/egorchenkov](https://github.com/egorchenkov).
 
 ## License
 

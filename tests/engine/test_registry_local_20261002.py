@@ -77,7 +77,8 @@ class LocalRegistryWriter(unittest.TestCase):
         token = bridge.probe("rtsp://8.8.8.8/live", "u", "p")["probe_token"]
         reply = bridge.add_camera({"camera_id": "x", "title": "X", "probe_token": token})
         self.assertFalse(reply["ok"])
-        self.assertIn("приватной", reply["error"])
+        self.assertEqual("registry.not_private", reply["error_key"])
+        self.assertIn("private network", reply["error"])
         self.assertFalse(self.registry.exists())
 
     def test_storage_reports_engine_free_space_threshold(self) -> None:

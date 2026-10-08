@@ -33,6 +33,7 @@ services:
       CCTV_RTSP_PROXY_PORT: ${CCTV_RTSP_PROXY_PORT:-28554}
       CCTV_HUMAN_GATE_MODE: ${CCTV_HUMAN_GATE_MODE:-shadow}
       CCTV_DISCOVERY_NETWORKS: ${CCTV_DISCOVERY_NETWORKS:-}
+      CCTV_LANG: ${CCTV_LANG:-}
       # Лимиты под tmpfs ниже: буфер — НА КАМЕРУ (и на детекторный поток), бюджет — на всё.
       CCTV_BUFFER_MAX_BYTES: ${CCTV_BUFFER_MAX_BYTES:-419430400}
       CCTV_MAX_TOTAL_BYTES: ${CCTV_STORAGE_BUDGET_BYTES:-2684354560}
@@ -59,6 +60,7 @@ services:
       CCTV_CHAT_ID: ${CCTV_CHAT_ID:-}
       CCTV_ALLOWED_USER_IDS: ${CCTV_ALLOWED_USER_IDS:-}
       CCTV_OWNER_IDS: ${CCTV_OWNER_IDS:-}
+      CCTV_LANG: ${CCTV_LANG:-}
       CCTV_BRIDGE_URL: http://127.0.0.1:${CCTV_BRIDGE_PORT:-8780}
       CCTV_EVENTS_PORT: ${CCTV_EVENTS_PORT:-8781}
     volumes:

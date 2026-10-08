@@ -242,7 +242,7 @@ class Bridge:
     def download(self, url: str, *, kind: str, expected_sha256: str,
                  declared_bytes: int | None = None) -> Downloaded:
         if not self.is_bridge_url(url):
-            raise MediaRejected("unavailable", "media URL не принадлежит Bridge")
+            raise MediaRejected("unavailable", "media URL does not belong to the Bridge")
         limit = self.cfg.max_bytes_for(kind)
         if declared_bytes is not None and declared_bytes > limit:
             raise MediaRejected("media_too_large", f"{declared_bytes} > {limit}")
@@ -268,14 +268,14 @@ class Bridge:
                 for chunk in response.iter_bytes(CHUNK):
                     size += len(chunk)
                     if size > limit:
-                        raise MediaRejected("media_too_large", f"поток превысил {limit} байт")
+                        raise MediaRejected("media_too_large", f"stream exceeded {limit} bytes")
                     digest.update(chunk)
                     handle.write(chunk)
             actual = digest.hexdigest()
             if expected_sha256 and actual.lower() != expected_sha256.lower():
-                raise MediaRejected("unavailable", "sha256 не совпал")
+                raise MediaRejected("unavailable", "sha256 mismatch")
             if declared_bytes is not None and size != declared_bytes:
-                raise MediaRejected("unavailable", "объявленный размер не совпал")
+                raise MediaRejected("unavailable", "declared size mismatch")
         except BaseException:
             _unlink(path)
             raise
@@ -295,9 +295,9 @@ class Bridge:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise BridgeError("unavailable", "ответ Bridge не JSON") from exc
+            raise BridgeError("unavailable", "Bridge reply is not JSON") from exc
         if not isinstance(payload, dict):
-            raise BridgeError("unavailable", "ответ Bridge не объект")
+            raise BridgeError("unavailable", "Bridge reply is not an object")
         return payload
 
     @staticmethod
