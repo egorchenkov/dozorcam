@@ -20,8 +20,16 @@
 # Гейт кадров перед YOLO (frame-diff): enforce | shadow. shadow гоняет YOLO на каждом
 # кадре (~10x CPU) и нужен только для диагностики гейта.
 # person_gate_mode = "enforce"
-# Гейт людей от самой камеры (ONVIF FieldDetector): off | shadow | enforce.
+# Гейт людей от самой камеры (ONVIF FieldDetector): off | shadow | enforce | confirm.
+# confirm — сигнал камеры подтверждает: в окне −15…+60 с хватает одного кадра YOLO
+# с порогом 0.20, фильтр неподвижных не применяется; без сигнала — обычные правила.
 human_gate_mode = "shadow"
+# human_confirm_confidence = 0.20
+# human_confirm_hits = 1
+# Диагностика пропусков: журнал отказов и суточная сводка в state/diag.
+# diag_enabled = 1
+# diag_utc_offset = "+03:00"      # граница суток сводки
+# diag_pairs = "porch:hall"       # камеры на одно место с двух сторон (парность)
 # Детектор людей: семейство yolov5 | yolox | yolov8 и файл весов (имя ищется в
 # /etc/cctv/models, затем в /usr/share/cctv/models). Без настройки — YOLOX-Tiny из
 # образа; в образе только он (Apache-2.0), веса YOLOv5/YOLOv8 — свои, docs/models.md.

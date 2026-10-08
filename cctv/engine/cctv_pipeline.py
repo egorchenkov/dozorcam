@@ -19,6 +19,7 @@ from .onvif_motion_gate import OnvifMotionGate
 from .model_switch import ModelManager
 from .threshold_calibration import ThresholdManager
 from .still_object_filter import StillObjectFilter
+from . import person_diag
 
 # cv2 открывает RTSP тем же ffmpeg: транспорт задаётся только через это окружение
 # и должен совпадать с recorder, иначе frame-diff молча деградирует в fallback.
@@ -253,9 +254,46 @@ MOTION_GATE_KEEPALIVE_SEC = float(os.environ.get("CCTV_MOTION_GATE_KEEPALIVE_SEC
 #   shadow  — подписаться, считать «камера видела / молчала» на каждый кадр и
 #             на каждое событие YOLO, но решений не принимать (по умолчанию);
 #   enforce — без сигнала камеры YOLO не запускать (остаются keepalive и
-#             forced_scan — предохранители от мёртвой подписки).
+#             forced_scan — предохранители от мёртвой подписки);
+#   confirm — сигнал камеры подтверждает, а не запрещает (0.1.2): в окне вокруг
+#             него YOLO смотрит каждый кадр, хватает одного кадра с порогом
+#             HUMAN_CONFIRM_CONFIDENCE, фильтр неподвижных не применяется. Без
+#             сигнала — обычные правила. 06.10.2026 камера у двери видела 9 проходов
+#             сама, а YOLO дал 0 событий: 0.21–0.25 ниже порога, один кадр 0.40
+#             без второго, 0.68 срезан фильтром неподвижных (человек стоял у двери).
 # Включается только на камерах с camera_human_events в реестре.
 HUMAN_GATE_MODE = os.environ.get("CCTV_HUMAN_GATE_MODE", "shadow")
+# Окно confirm: кадры от PRE секунд до сигнала камеры до POST секунд после него.
+# Камера шлёт true на входе в зону и не повторяет его, пока человек там, а
+# inactive от неё не приходит вовсе (замер 05.10.2026) — поэтому «после» длинное.
+# Только здоровая подписка: fail-open здесь снизил бы порог на всё время обрыва.
+HUMAN_CONFIRM_PRE_SEC = float(os.environ.get("CCTV_HUMAN_CONFIRM_PRE_SEC", "15"))
+HUMAN_CONFIRM_POST_SEC = float(os.environ.get("CCTV_HUMAN_CONFIRM_POST_SEC", "60"))
+HUMAN_CONFIRM_CONFIDENCE = float(os.environ.get("CCTV_HUMAN_CONFIRM_CONFIDENCE", "0.20"))
+HUMAN_CONFIRM_HITS = int(os.environ.get("CCTV_HUMAN_CONFIRM_HITS", "1"))
+# Фильтр неподвижных в окне confirm. В первой сборке 0.1.2 его в окне не было, и
+# 07.10.2026 камера у двери отправила три ложных события: человек открыл калитку,
+# в кадре открылось ведро с сеном (YOLO 0.20–0.33), и любой его кадр в минуту
+# после сигнала камеры становился «человеком». В окне сигнала режется только
+# мёртвая рамка: внутри изменилось меньше этой доли (в процентах) пикселей — у
+# ведра 0.0 % на всех кадрах, у людей тем утром 40–52 %. Обычные 10 % здесь
+# резали бы человека, который стоит у двери и только жестикулирует, а память
+# «здесь стоял предмет» в окне не решает: место у двери, где кто-то постоял,
+# становится «предметом» на сутки. 0 — без фильтра в окне (как в c683851).
+HUMAN_CONFIRM_STILL_INSIDE = float(os.environ.get("CCTV_HUMAN_CONFIRM_STILL_INSIDE", "3"))
+# Камера с подпиской на людей молчит: ни одной цели в зоне за ±(5 мин удержания
+# + 60 с) вокруг кадра. В confirm это тоже свидетельство — на перечисленных
+# камерах порог YOLO без сигнала камеры не ниже HUMAN_QUIET_CONFIDENCE.
+# Только поимённо: 07.10.2026 у двери снаружи без сигнала ушли пять ложных
+# событий 0.38–0.48 (ИК-куст на рассвете, мешок в тенях листвы днём), 06.10 —
+# ещё четыре на том же кусте; настоящих без сигнала у неё за 05–07.10 ни
+# одного, а по сверке 28.09–02.10 все 33 настоящих кадра YOLO попадали в
+# состояние камеры с удержанием 5 мин. Камера в доме, напротив, 06.10 молчала
+# на восьми настоящих событиях 0.36–0.52 (рабочий на корточках у края кадра) —
+# ей такое правило резало бы людей. Нездоровая подписка правило выключает.
+HUMAN_QUIET_CAMERAS = frozenset(c.strip() for c in os.environ.get("CCTV_HUMAN_QUIET_CAMERAS", "").split(",")
+                                if c.strip())
+HUMAN_QUIET_CONFIDENCE = float(os.environ.get("CCTV_HUMAN_QUIET_CONFIDENCE", "0.60"))
 HUMAN_GATE_HOLD_SECONDS = float(os.environ.get("CCTV_HUMAN_GATE_HOLD_SECONDS", "20"))
 # Окно вокруг момента съёмки кадра. Камера сообщает о входе в зону после
 # timeThreshold (1 с) и с задержкой PullMessages; человек же остаётся в кадре
@@ -301,6 +339,12 @@ PERSON_GATE_NOISE_WINDOW = int(os.environ.get("CCTV_PERSON_GATE_NOISE_WINDOW", "
 PERSON_GATE_NOISE_MAX = float(os.environ.get("CCTV_PERSON_GATE_NOISE_MAX", "3"))
 PERSON_DETECT_INTERVAL = float(os.environ.get("CCTV_PERSON_DETECT_INTERVAL", "1"))
 PERSON_HITS = int(os.environ.get("CCTV_PERSON_HITS", "2"))
+# Кадр, на котором YOLO увидел человека, держит гейты открытыми столько секунд:
+# второй кадр серии обязан дойти до YOLO. Без этого пропуск кадра гейтом обнулял
+# серию, и мелкая фигура на большом поле (diff 0.1–0.5 % при плавающем поле
+# 0.45–0.69 %) давала 0.68–0.83 через кадр — и ни одного события (05.10.2026,
+# 07:43–07:45 и 08:29–08:33). 0 — прежнее поведение.
+PERSON_HIT_HOLD_SEC = float(os.environ.get("CCTV_PERSON_HIT_HOLD_SEC", "5"))
 # Незавершённый .ts ещё дописывается ffmpeg. Не открываем его на чтение: OpenCV
 # может получить неполный GOP и либо не декодировать кадр, либо вывести в журнал
 # ошибки H.264. Один стабильный файл добавляет не более ~6 с к тревоге.
@@ -695,10 +739,72 @@ def build_human_gate(camera: Camera) -> OnvifMotionGate | None:
     host = onvif_host(camera)
     if not host:
         return None
-    return OnvifMotionGate(camera.camera_id, f"http://{host}/onvif/Events",
+    gate = OnvifMotionGate(camera.camera_id, f"http://{host}/onvif/Events",
                            camera.snapshot_user, camera.snapshot_password,
                            hold_seconds=HUMAN_GATE_HOLD_SECONDS,
                            topics=("FieldDetector",), label="human_gate")
+    journal = diag_journal()
+    if journal is not None:
+        # Сигнал камеры — «след» для сводки парности и пропусков.
+        gate.on_motion = lambda at: journal.write({"kind": "camera_signal", "camera": camera.camera_id,
+                                                   "at": round(at, 1)})
+    return gate
+
+
+def human_confirms(human_gate: OnvifMotionGate | None, shot: float | None) -> bool:
+    """Режим confirm: видела ли камера человека в окне вокруг кадра. Нездоровая
+    подписка — «нет»: подтверждение не бывает fail-open."""
+    if human_gate is None or HUMAN_GATE_MODE != "confirm" or shot is None or not human_gate.healthy:
+        return False
+    return human_gate.active_between(shot - HUMAN_CONFIRM_POST_SEC, shot + HUMAN_CONFIRM_PRE_SEC)
+
+
+def person_threshold(confidence: float, confirm: bool, camera_quiet: bool = False) -> float:
+    if confirm:
+        return min(confidence, HUMAN_CONFIRM_CONFIDENCE)
+    if camera_quiet and HUMAN_QUIET_CONFIDENCE > 0:
+        return max(confidence, HUMAN_QUIET_CONFIDENCE)
+    return confidence
+
+
+def still_rejects(verdict, confirm: bool) -> bool:
+    """Режет ли вердикт фильтра неподвижных кадр. В окне confirm — только мёртвую
+    рамку (см. HUMAN_CONFIRM_STILL_INSIDE); «не знаю» и обход по уверенности
+    проходят, как и вне окна."""
+    if not confirm:
+        return not verdict.moving
+    return not verdict.moving and verdict.inside < HUMAN_CONFIRM_STILL_INSIDE
+
+
+def camera_is_quiet(camera_id: str, human_gate: OnvifMotionGate | None, camera_state: bool | None) -> bool:
+    """Режим confirm, камера из HUMAN_QUIET_CAMERAS: подписка здорова, а цели в
+    зоне около кадра не было."""
+    return (camera_id in HUMAN_QUIET_CAMERAS and human_gate is not None and HUMAN_GATE_MODE == "confirm"
+            and camera_state is False and human_gate.healthy)
+
+
+def required_hits(confirm: bool) -> int:
+    return max(1, HUMAN_CONFIRM_HITS) if confirm else PERSON_HITS
+
+
+DIAG_JOURNAL: person_diag.Journal | None = None
+_DIAG_LOCK = threading.Lock()
+
+
+def diag_journal(storage: pathlib.Path | None = None) -> person_diag.Journal | None:
+    """Журнал диагностики процесса (state/diag); выключается CCTV_DIAG_ENABLED=0."""
+    global DIAG_JOURNAL
+    if not person_diag.ENABLED:
+        return None
+    with _DIAG_LOCK:
+        if DIAG_JOURNAL is None and storage is not None:
+            DIAG_JOURNAL = person_diag.Journal(settings.engine_state(storage) / "diag")
+        return DIAG_JOURNAL
+
+
+def encode_jpeg(frame) -> bytes | None:
+    ok, encoded = cv2.imencode(".jpg", frame)
+    return encoded.tobytes() if ok else None
 
 
 INFER_SLOTS = threading.BoundedSemaphore(max(1, PERSON_INFER_SLOTS))
@@ -753,6 +859,9 @@ def detect(camera: Camera, bridge: Bridge) -> None:
         except Exception as exc:
             print(f"person_threshold_error camera={camera.camera_id} error={type(exc).__name__}", flush=True)
     recorded_stream = RecordedMainStream(storage, camera) if person_detector is not None else None
+    journal = diag_journal(storage) if person_detector is not None else None
+    candidates = person_diag.CandidateLog(
+        camera.camera_id, journal, journal.root / "snapshots" if journal is not None else None, encode_jpeg)
     motion_gate = build_motion_gate(camera) if person_detector is not None else None
     if motion_gate is not None:
         motion_gate.start()
@@ -780,8 +889,9 @@ def detect(camera: Camera, bridge: Bridge) -> None:
     # (решение владельца 26.09.2026: предмет в кадре не должен становиться
     # «человеком»). Считает подавленные срабатывания в person_stats и раз в
     # MOTION_COOLDOWN пишет подробности одного из них.
-    still = StillObjectFilter()
+    still = StillObjectFilter(memory_path=settings.engine_state(storage) / f"{camera.camera_id}.still.json")
     still_suppressed, still_logged_at = 0, 0.0
+    confirm_events, floor_closed = 0, 0
     hit_scores: list[float] = []  # оценки кадров текущей серии — слабейший из них идёт в калибровку
 
     def watching(reason: str) -> tuple[str, str]:
@@ -837,10 +947,15 @@ def detect(camera: Camera, bridge: Bridge) -> None:
             shot_at = recorded_stream.frame_captured_at if recorded_stream is not None else None
             frame_at = shot_at if shot_at is not None else time.time()
             still.remember(frame_at, gate_gray)
+            candidates.tick(frame_at)  # эпизод-кандидат закрывается по времени кадра, а не по следующему YOLO
+            floor_blocked = False
             if diff_score is not None:
                 diff_window.append(diff_score)
                 gate_threshold = gate_threshold_for(gate_base, gate_noise)
                 gate_closed = diff_score < gate_threshold
+                # Кадр, который база камеры пропустила бы, а плавающий пол — нет.
+                floor_blocked = gate_closed and diff_score >= gate_base
+                floor_closed += int(floor_blocked)
             if gate_closed and motion_gate is not None:
                 # ONVIF может гейт только открыть: его VMD не доказан, поэтому
                 # доверять ему закрытие нельзя. Кадр из буфера снят в прошлом,
@@ -880,6 +995,12 @@ def detect(camera: Camera, bridge: Bridge) -> None:
                     human_seen += 1
                 else:
                     human_blind += 1
+            # confirm: сигнал камеры открывает оба гейта — в его окне YOLO смотрит
+            # каждый кадр (06.10 камера у двери получала 5 кадров YOLO на минуту прохода).
+            camera_confirm = human_confirms(human_gate, frame_at if shot_at is not None else
+                                            (recorded_stream.current_started_at if recorded_stream else None))
+            if camera_confirm:
+                gate_closed = human_closed = False
             if (gate_closed or human_closed) and time.time() < forced_scan_until:
                 gate_closed = human_closed = False
             if (gate_closed or human_closed) and time.time() - keepalive_at >= MOTION_GATE_KEEPALIVE_SEC:
@@ -899,6 +1020,8 @@ def detect(camera: Camera, bridge: Bridge) -> None:
                 # старых сегментов), но самый дорогой шаг — YOLO — пропущен.
                 # hits сбрасываем: «два подряд» не должно склеивать сигналы
                 # из разных, разорванных гейтом, окон.
+                if 0 < hits:
+                    candidates.broken_series(frame_at, hits)
                 hits, hit_scores = 0, []
                 gate_skipped += 1
                 remember_noise(gate_noise, diff_score, False)
@@ -920,7 +1043,10 @@ def detect(camera: Camera, bridge: Bridge) -> None:
                 write_heartbeat(storage, camera.camera_id, "blind", "person_detector_error", last_motion_at)
                 time.sleep(3); continue
             still_note, still_object = "", False
-            if found:
+            threshold_now = person_threshold(person_detector.confidence, camera_confirm,
+                                             camera_is_quiet(camera.camera_id, human_gate, camera_state))
+            found = score >= threshold_now
+            if found and (HUMAN_CONFIRM_STILL_INSIDE > 0 or not camera_confirm):
                 # Сеть увидела «человека» — но двигается ли он? Предмет (мешки,
                 # ведро, ночной блик) стоит на месте, и его рамка не отличается
                 # от того же места кадра несколько секунд назад. Подавленное
@@ -928,21 +1054,31 @@ def detect(camera: Camera, bridge: Bridge) -> None:
                 # окно шума гейта, и в счётчик still.
                 verdict = still.judge(frame_at, box, score)
                 still_note = " " + verdict.note()
-                if not verdict.moving:
+                if still_rejects(verdict, camera_confirm):
                     found, still_object = False, True
                     still_suppressed += 1
                     if time.time() - still_logged_at >= MOTION_COOLDOWN:
                         still_logged_at = time.time()
                         print(f"person_still camera={camera.camera_id} confidence={score:.2f} "
                               f"box={','.join(f'{v:.3f}' for v in box)}{still_note}", flush=True)
+            needed = required_hits(camera_confirm)
+            if not found and 0 < hits < needed:
+                candidates.broken_series(frame_at, hits)
+            candidates.frame(frame_at, score,
+                             "gate_floor" if keepalive and floor_blocked and found else
+                             "hit" if found else "still" if still_object else
+                             "camera_quiet" if score >= person_detector.confidence else "below_threshold",
+                             box, camera_saw, camera_confirm, still_note.strip(), frame)
             hits = hits + 1 if found else 0
             hit_scores = (hit_scores + [score])[-PERSON_HITS:] if found else []
+            if found and PERSON_HIT_HOLD_SEC > 0:
+                forced_scan_until = max(forced_scan_until, time.time() + PERSON_HIT_HOLD_SEC)
             remember_noise(gate_noise, diff_score, found)
             if calibration is not None:
                 # Нездоровая подписка камеры отвечает «видела» на всё (fail-open) —
                 # для калибровки это «не знаю», а не человек на каждом кадре.
                 healthy_camera = human_gate is not None and human_gate.healthy
-                calibration.observe(frame_at, score, found, still_object,
+                calibration.observe(frame_at, score, found and score >= person_detector.confidence, still_object,
                                     bool(camera_saw) if healthy_camera else None)
             window.append(score)
             if found and human_closed:
@@ -959,7 +1095,9 @@ def detect(camera: Camera, bridge: Bridge) -> None:
                 print(f"gate_missed_person camera={camera.camera_id} confidence={score:.2f} "
                       f"mode={PERSON_GATE_MODE} keepalive={int(keepalive)} "
                       f"diff={diff_score if diff_score is None else round(diff_score, 3)}", flush=True)
-            if hits >= PERSON_HITS and time.time() - last_event >= MOTION_COOLDOWN:
+            if hits >= needed and time.time() - last_event < MOTION_COOLDOWN:
+                candidates.episode = None  # событие по этому месту уже ушло — не пропуск
+            if hits >= needed and time.time() - last_event >= MOTION_COOLDOWN:
                 # Время события — момент съёмки кадра, а не «сейчас»: по нему
                 # бридж центрирует клип (см. RecordedMainStream.frame_captured_at).
                 shot_at = recorded_stream.frame_captured_at if recorded_stream is not None else None
@@ -982,9 +1120,17 @@ def detect(camera: Camera, bridge: Bridge) -> None:
                               f"mode={HUMAN_GATE_MODE} events={human_gate.motion_count}", flush=True)
                     else:
                         human_confirmed += 1
-                if calibration is not None:
-                    calibration.event(min(hit_scores[-PERSON_HITS:] or [score]),
-                                      bool(camera_saw) if human_gate is not None else False)
+                weakest = min(hit_scores[-PERSON_HITS:] or [score])
+                if calibration is not None and weakest >= person_detector.confidence:
+                    # Событие по сигналу камеры с порогом 0.20 — не «проход» для
+                    # калибровки: он прижал бы потолок порога к уверенности confirm.
+                    calibration.event(weakest, bool(camera_saw) if human_gate is not None else False)
+                if camera_confirm:
+                    seen += " confirm=1"
+                    confirm_events += 1
+                candidates.event(shot_at if shot_at is not None else time.time(), score,
+                                 camera_confirm, camera_saw if human_gate is not None else None,
+                                 box, still_note.strip())
                 print(f"person camera={camera.camera_id} confidence={score:.2f}{lag}{seen}"
                       f" box={','.join(f'{v:.3f}' for v in box)}{still_note}", flush=True)
                 # Не берём новый snapshot по RTSP/ISAPI: это была бы ещё одна
@@ -1005,7 +1151,8 @@ def detect(camera: Camera, bridge: Bridge) -> None:
                 pick = lambda q: ranked[min(len(ranked) - 1, int(len(ranked) * q))]
                 print(f"person_stats camera={camera.camera_id} n={len(ranked)} "
                       f"p50={pick(0.5):.2f} p95={pick(0.95):.2f} max={ranked[-1]:.2f} "
-                      f"confidence={person_detector.confidence:.2f} still={still_suppressed}", flush=True)
+                      f"confidence={person_detector.confidence:.2f} still={still_suppressed} "
+                      f"rejects={candidates.rejects} confirm_events={confirm_events}", flush=True)
                 still_suppressed = 0
                 # Доля пропущенного — обещанная экономия CPU; diff-персентили
                 # нужны, чтобы порог гейта ставился по замеру, а не на глаз.
@@ -1018,7 +1165,8 @@ def detect(camera: Camera, bridge: Bridge) -> None:
                       f"threshold={gate_threshold:.2f}% base={gate_base:.2f}% scanned={gate_scanned} "
                       f"skipped={gate_skipped} shadow_skipped={gate_shadow_skipped} saved={saved:.0f}% "
                       f"diff_p50={take(0.5):.3f}% diff_p95={take(0.95):.3f}% "
-                      f"diff_max={diffs[-1] if diffs else 0.0:.3f}%{onvif}", flush=True)
+                      f"diff_max={diffs[-1] if diffs else 0.0:.3f}% floor_closed={floor_closed}{onvif}", flush=True)
+                floor_closed = 0
                 if human_gate is not None:
                     # saved — доля кадров, которые enforce не пустил бы в YOLO;
                     # events — сколько раз камера вообще подавала сигнал (0 при
@@ -1111,6 +1259,9 @@ def main() -> None:
         # Заявки на смену модели из бота принимаются и без камер с YOLO:
         # выбор проверяется и запоминается до того, как детекция включена.
         person_thresholds_for(storage)
+    journal = diag_journal(storage)
+    if journal is not None:
+        threading.Thread(target=person_diag.daily_loop, args=(journal,), daemon=True).start()
     for camera in bridge.cameras.values():
         threading.Thread(target=record, args=(camera, storage), daemon=True).start()
         if camera.person_detection and detect_buffer_name(camera) != camera.camera_id:

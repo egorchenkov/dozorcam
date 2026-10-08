@@ -349,8 +349,26 @@ def health() -> int:
         print("не работают: " + ", ".join(dead))
         return 1
     role = status.get("role")
-    if role == "engine":
-        port = os.environ.get("CCTV_PORT") or str(settings.DEFAULT_BRIDGE_PORT)
+    # Проверка — отдельный процесс (docker exec): config.toml сам в окружение не попадает,
+    # а без него internal_tls из файла не виден и проверка шла бы к mTLS-мосту по http.
+    env = dict(os.environ)
+    if role in settings.COMPONENTS:
+        try:
+            settings.apply(role, env)
+        except settings.SettingsError:
+            pass
+    tls = settings.internal_tls(env)
+    if role == "engine" and tls:
+        # Без клиентского сертификата mTLS-мост не ответит — хватает того, что порт слушает.
+        port = env.get("CCTV_PORT") or str(settings.DEFAULT_BRIDGE_PORT)
+        try:
+            socket.create_connection(("127.0.0.1", int(port)), timeout=5).close()
+        except OSError as exc:
+            print(f"мост (mTLS) на :{port} не слушает: {exc}")
+            return 1
+        print(f"ok: мост :{port} (mTLS)")
+    elif role == "engine":
+        port = env.get("CCTV_PORT") or str(settings.DEFAULT_BRIDGE_PORT)
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/cameras", timeout=5) as reply:
                 cameras = len(json.loads(reply.read()).get("cameras", []))
@@ -358,9 +376,9 @@ def health() -> int:
             print(f"мост на :{port} не отвечает: {exc}")
             return 1
         print(f"ok: мост :{port}, камер {cameras}")
-    elif role == "bot" and not settings.internal_tls():
+    elif role == "bot" and not tls:
         # С mTLS приёмник есть только при заданных сертификатах — тогда хватает живости процесса.
-        port = int(os.environ.get("CCTV_EVENTS_PORT") or settings.DEFAULT_EVENTS_PORT)
+        port = int(env.get("CCTV_EVENTS_PORT") or settings.DEFAULT_EVENTS_PORT)
         try:
             socket.create_connection(("127.0.0.1", port), timeout=5).close()
         except OSError as exc:

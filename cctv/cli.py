@@ -17,6 +17,7 @@ COMMANDS = {
     "rtsp-proxy": ("engine", "cctv.engine.rtsp_credential_proxy"),
     "bot": ("bot", "cctv.bot.main"),
     "notify": ("bot", "cctv.notify"),
+    "diag-summary": ("engine", "cctv.engine.person_diag"),
 }
 
 
@@ -28,7 +29,7 @@ def run(command: str, argv: list[str] | None = None) -> int:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 2
     module = importlib.import_module(module_name)
-    if command == "notify":
+    if command in ("notify", "diag-summary"):
         return int(module.main(argv) or 0)
     return int(module.main() or 0)
 

@@ -4,6 +4,67 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-10-08
+
+Fewer missed people and fewer false alarms. Cameras that detect people themselves can now
+confirm a person instead of only gating the detector, a small figure far away is no longer
+lost between frames, and a camera can be told to trust its own silence (a bush or a bag no
+longer becomes a person at dawn). A diagnostic journal and a daily summary show which
+candidates were rejected and why, so a miss can be checked after the fact.
+
+### Added
+- `human_gate_mode = "confirm"` for cameras with `camera_human_events`: the camera's own
+  person signal (ONVIF FieldDetector) confirms instead of gating. From 15 s before to 60 s
+  after the signal (`human_confirm_pre_sec`, `human_confirm_post_sec`) YOLO looks at every
+  sampled frame, one frame is enough (`human_confirm_hits = 1`) at a lower threshold
+  (`human_confirm_confidence = 0.20`), and the still-object filter only rejects a dead box
+  (`human_confirm_still_inside`: less than 3 % of the box changed — a bucket revealed when a
+  gate opens scored 0.20–0.33 in the window and became a "person"; 0 skips the filter). A broken
+  subscription never confirms (no fail-open). Without the signal the usual rules apply.
+  Confirmed events are logged with `confirm=1` and do not feed threshold calibration.
+- `human_quiet_cameras = "a,b"` (confirm mode only, empty by default): on the listed cameras,
+  while the subscription is healthy and the camera has had no person in its zone around the
+  frame (5-minute hold + 60 s), YOLO needs `human_quiet_confidence` (0.60) instead of the
+  usual threshold. Meant for a camera whose own person detection covers every real visit
+  while YOLO keeps firing on scene texture (an IR-lit bush at dawn, shadows on a bag at noon).
+  Do not list a camera that misses people itself (a crouching person at the frame edge).
+  The diag journal reason is `camera_quiet`.
+- Miss diagnostics (`state/diag`, `diag_enabled = 0` turns off): a JSONL journal per day of
+  detector events, camera person signals and rejected candidates — an episode of frames with
+  YOLO ≥ 0.20 that did not become an event, with the reason (`below_threshold`,
+  `single_frame`, `still`, `gate_floor`), max confidence, box and, throttled to one per camera
+  per 5 minutes, a snapshot of the best frame. Log line `person_reject camera=… reason=… max=…`.
+  `gate_stats` counts `floor_closed` frames (the camera base threshold would pass them, the
+  floating noise floor did not).
+  Detector events in the journal carry the box and the still-filter verdict too, so a false
+  event can be explained from the journal alone, without the engine log.
+- Daily summary after local midnight (`diag_utc_offset = "+03:00"`) to
+  `state/diag/summary-<day>.txt|json` and the log (`diag_daily`, `diag_pair`); on demand —
+  `python -m cctv diag-summary [--day …] [--json]`. Camera pairs looking at one place
+  (`diag_pairs = "a:b"`, window `diag_pair_window_sec = 120`): an event with a pair on the
+  other camera, a single one with no trace on the other camera (explained: someone stayed on
+  one side), or a suspicious one — the other camera had a trace (its own person signal or a
+  rejected candidate) but no event. Suspicious items and "camera saw a person, no event" are
+  candidates for a manual check, not a verdict.
+
+### Changed
+- A frame where YOLO sees a person keeps both gates open for `person_hit_hold_sec` (5 s) so the
+  second frame of the series actually reaches YOLO. Before, a frame skipped by the frame-diff
+  gate reset the series: a small figure on a wide field changing the image below the floating
+  noise floor scored 0.68–0.83 on every other frame and never produced an event.
+- Still-object filter: when more than 15 % of the frame outside the box changed
+  (`person_still_unreliable_outside`; dusk, IR switch, exposure), the reference frame is
+  unreliable and the detection passes as "don't know" instead of being rejected. The
+  confidence bypass is 0.55 instead of 0.70. A box that was already judged still at the same
+  place (IoU ≥ 0.5, remembered for 24 h, survives restarts in `state/<camera>.still.json`)
+  gets neither the bypass nor the "don't know" pass, so a static object at 0.53–0.60 does not
+  turn into people at dawn.
+
+### Fixed
+- Container health check with `internal_tls = true` in `config.toml`: it probed the mTLS
+  bridge over plain http and always failed (the engine never became `healthy`). The check now
+  reads the config file like the roles do and, with mTLS, verifies that the bridge port listens.
+
 ## [0.1.1] — 2026-10-06
 
 ### Added

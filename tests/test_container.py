@@ -121,6 +121,24 @@ class ContainerTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(container.health(), 1)
 
+    def test_health_engine_with_internal_tls_from_config_checks_port_not_http(self) -> None:
+        """internal_tls из config.toml: проверка — порт моста, а не http к mTLS-серверу."""
+        import socket
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        (self.config / "config.toml").write_text(f"[common]\ninternal_tls = true\n\n[engine]\nport = {port}\n")
+        container.write_status("running", role="engine", children={"bridge": True})
+        with mock.patch.object(container.urllib.request, "urlopen", side_effect=AssertionError("http")), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(container.health(), 0)
+        self.assertIn("mTLS", out.getvalue())
+        listener.close()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(container.health(), 1)
+        self.assertIn("не слушает", out.getvalue())
+
     def test_crashing_child_backs_off_instead_of_tight_loop(self) -> None:
         child = container.Child("crash", [sys.executable, "-c", "raise SystemExit(3)"])
         pauses = []

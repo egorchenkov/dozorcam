@@ -40,7 +40,9 @@ def warm(filt: StillObjectFilter, frames, step: float = 0.5) -> float:
 
 class StillObjectFilterTest(unittest.TestCase):
     def filt(self, **kw) -> StillObjectFilter:
-        return StillObjectFilter(window_sec=20, ref_age_sec=3, inside_min=10, ratio=3, bypass=0.70, **kw)
+        kw.setdefault("bypass", 0.70)
+        kw.setdefault("unreliable_outside", 15)
+        return StillObjectFilter(window_sec=20, ref_age_sec=3, inside_min=10, ratio=3, **kw)
 
     def test_static_object_is_not_a_person(self):
         """Мешки стоят 10 с, YOLO даёт 0.41 — рамка не изменилась, тревоги нет."""
@@ -62,14 +64,43 @@ class StillObjectFilterTest(unittest.TestCase):
         self.assertGreater(verdict.inside, 90)
         self.assertLess(verdict.outside, 1)
 
-    def test_global_light_change_is_not_motion(self):
-        """Облако/ИК: изменился весь кадр равномерно, рамка не выделяется."""
+    def test_global_light_change_is_unknown_not_still(self):
+        """Облако/ИК: изменился весь кадр — эталон недостоверен. С 0.1.2 это «не
+        знаю», кадр идёт дальше (06.10.2026 так резались люди в сумерках)."""
         filt = self.filt()
         at = warm(filt, [with_figure(scene(60))] * 12 + [with_figure(scene(120), value=250)] * 2)
         verdict = filt.judge(at, BOX, 0.45)
-        self.assertFalse(verdict.moving)
+        self.assertTrue(verdict.moving)
+        self.assertEqual("unreliable_reference", verdict.reason)
         self.assertGreater(verdict.inside, 90)
         self.assertGreater(verdict.outside, 90)
+
+    def test_known_static_object_stays_still_on_light_change(self):
+        """Предмет уже признан неподвижным на этом месте — смена света его не
+        «оживляет», и обход по уверенности он не получает."""
+        filt = self.filt(bypass=0.55)
+        at = warm(filt, [with_figure(scene(60))] * 20)
+        self.assertEqual("still", filt.judge(at, BOX, 0.41).reason)
+        filt2 = self.filt(bypass=0.55)
+        filt2.static_boxes.extend(filt.static_boxes)
+        at = warm(filt2, [with_figure(scene(60))] * 12 + [with_figure(scene(120), value=250)] * 2)
+        verdict = filt2.judge(at, BOX, 0.60)
+        self.assertFalse(verdict.moving)
+        self.assertEqual("known_static", verdict.reason)
+        at = warm(filt2, [with_figure(scene(60))] * 20)
+        self.assertEqual("still", filt2.judge(at, BOX, 0.60).reason)  # без обхода 0.55
+
+    def test_static_memory_survives_restart(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "still.json"
+            filt = self.filt(memory_path=path)
+            at = warm(filt, [with_figure(scene())] * 20)
+            filt.judge(at, BOX, 0.41)
+            again = self.filt(memory_path=path, bypass=0.55)
+            self.assertEqual(1, len(again.static_boxes))
+            at = warm(again, [with_figure(scene())] * 20)
+            self.assertEqual("still", again.judge(at, BOX, 0.60).reason)
 
     def test_no_reference_yet_means_no_alert(self):
         """Первые секунды после старта сравнивать не с чем — предмет не тревожит,

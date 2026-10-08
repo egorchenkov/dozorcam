@@ -263,8 +263,9 @@ class PipelineWiringTest(unittest.TestCase):
 
         source = inspect.getsource(cctv_pipeline.detect)
         self.assertIn("person_thresholds_for(storage).camera(camera.camera_id, person_detector)", source)
-        self.assertIn("calibration.observe(frame_at, score, found, still_object", source)
-        self.assertIn("calibration.event(min(hit_scores[-PERSON_HITS:]", source)
+        self.assertIn("calibration.observe(frame_at, score, found and score >= person_detector.confidence, still_object", source)
+        self.assertIn("weakest = min(hit_scores[-PERSON_HITS:]", source)
+        self.assertIn("calibration.event(weakest", source)
 
 
 class RecordedBackgroundTest(unittest.TestCase):

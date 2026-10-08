@@ -153,6 +153,8 @@ class OnvifMotionGate:
         # active…inactive p50 47 с, max 264 с — по ISAPI 28.09–02.10).
         self._active_keys: dict[str, float] = {}
         self.state_cap_seconds = state_cap_seconds
+        # Наблюдатель сигналов камеры (журнал диагностики), решений не принимает.
+        self.on_motion = None
 
     def start(self) -> None:
         threading.Thread(target=self._run, daemon=True).start()
@@ -297,4 +299,9 @@ class OnvifMotionGate:
                 print(f"{self.label}_state camera={self.camera_id} key={key} active={int(active)} op={operation}", flush=True)
             if has_active_motion(response, self.topics):
                 self.note_motion()
+                if self.on_motion is not None:
+                    try:
+                        self.on_motion(time.time())
+                    except Exception:
+                        pass  # журнал диагностики не имеет права рвать подписку
                 print(f"{self.label}_motion camera={self.camera_id} total={self.motion_count}", flush=True)
