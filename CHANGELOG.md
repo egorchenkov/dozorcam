@@ -2,6 +2,168 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-10-09
+
+One release instead of the planned 0.2.0 and 0.2.1: Dozorcam is now installed with one command
+and set up from the chat, and events no longer require a forum group. Choose where they go —
+here in the private chat, one group without topics, a topic per camera or a topic per
+location — and change it any time with `/mode`. A pinned camera map with cards replaces the
+"Control" panel, events of a camera within a minute become one post, hashtags filter the feed,
+`/invite` adds a person without a group. Cameras without ONVIF are added by IP and login, the
+bot rechecks the group by itself and tells you about new versions, times follow your time zone.
+
+### Upgrading from 0.1.x
+- 0.1.x has no `dozorcam` helper yet: put `dozorcam` from the 0.3.0 release assets next to
+  `compose.yml` and `.env` and run `./dozorcam update` (it fetches the new `compose.yml`, pins
+  the image by digest and rolls back if the health check fails); a git checkout can also
+  `git pull` and `docker compose pull && docker compose up -d`.
+- Existing installations stay in the "topic per camera" mode: topics and panels are reused, the
+  "Control" topic gets the camera map. Nothing has to be configured.
+- Times were Moscow time; now they follow `CCTV_TZ` and are UTC without it (the map says so).
+  Moscow users: `CCTV_TZ=Europe/Moscow`. `diag_utc_offset` is gone.
+- The bot needs the admin right "Pin messages" in the group and tells you if it is missing.
+
+### Added
+- One-line installer: `curl -fsSL https://egorchenkov.github.io/dozorcam/install.sh | sh`
+  (`scripts/install.sh`, Linux amd64/arm64, POSIX sh). It checks Docker and the compose plugin
+  (offers the official get.docker.com script, y/N), downloads `compose.yml`, `.env.example` and
+  the `dozorcam` helper of a release by tag (no git) and checks them against the release
+  `SHA256SUMS`, asks for the bot token and checks it with Telegram (`getMe`), takes the language
+  from `$LANG` and the time zone from the host, sizes the RAM video buffer from the machine
+  memory (25 % of RAM, 512 MB–4 GB), pins the image by digest, starts it, waits for the health
+  check and prints the owner link `https://t.me/<bot>?start=<code>` with a QR code — no more
+  grep in the logs. Non-interactive: `DOZORCAM_TOKEN`, `DOZORCAM_LANG`, `DOZORCAM_TZ`, …
+- `dozorcam` helper next to `compose.yml`: `status`, `logs`, `code` (owner link and QR again),
+  `restart`, `update` (latest GitHub release, changelog between versions, pull by digest,
+  automatic rollback to the previous version if the health check fails), `backup` / `restore`
+  (one tar.gz: `.env`, `config/`, state volumes), `uninstall` (volumes and image only on
+  request).
+- `CCTV_TZ` (IANA, e.g. `Europe/Berlin`; `tz` in `[common]` of config.toml): time zone of
+  captions and of the daily detector summary, passed by `compose.yml` to both containers.
+  Without it times are UTC and the Control topic says so.
+- `CCTV_TELEGRAM_API`: your own Bot API server (also used by the CI install test).
+- Hashtags in event captions: the camera and its location (`#gate #cottage`). Tap one and
+  Telegram filters the chat by that camera or place — in a topic, a group or a private chat.
+- Events of one camera within 60 s are merged: the bot edits its previous post (fresh frame,
+  "+N within a minute · latest 13:01:40") instead of sending a new one; the clip button of
+  the merged post is around the fresh frame. Works with topics too. `CCTV_EVENT_MERGE_SEC`
+  (default 60, `0` turns merging off); the window counts from the first post, so a camera
+  that keeps seeing people still gets one post a minute.
+- Delivery modes: where a camera's events go is a route with three presets — a topic per
+  camera (the default of existing installations), a topic per location (camera tag `location`,
+  otherwise the registry site; without a location — the "Cameras" topic) and flat (one chat
+  without topics: the group itself or, without a group, a private chat with each allowed
+  person; a requested frame or clip goes to whoever asked, sound follows each person's own
+  subscription). A camera can keep its own topic in any mode.
+- Camera map instead of the Control panel: one pinned message per place (the Control topic,
+  the group itself in the flat mode, or a private chat of each person without a group) with a
+  summary (cameras, online, events today), cameras in sections by location, a 🔕 mark for
+  cameras without notifications and one button per camera; with more than 12 cameras in
+  several locations the buttons go by location pages.
+- Camera card: tap a camera on the map and the same message turns into its card (status,
+  location and hashtags, snapshot, clip, pause, notifications, name, 📍 location, settings,
+  removal) with "◀ To the map"; a card left open goes back to the map after 10 minutes. The
+  pinned panel of a camera topic is the same card. Actions from a card on the map answer
+  right there.
+- `/cam <name>` — the card of a camera as a message here (by name, hashtag or camera_id;
+  without a name in a camera topic — that camera); works on the map, in the camera's place
+  and in a private chat with the bot.
+- `/mode` — where events go: a topic per camera, a topic per location or one chat without
+  topics (owner only). Cameras, their ids and history stay; topics are reused, the old map
+  says where it moved. 📍 Location on a card sets the camera's location tag.
+- `/invite` (owner, private chat) — a one-time link for one more person, valid 24 h, and the
+  list of invited people with "Remove". An invited person is allowed like
+  `CCTV_ALLOWED_USER_IDS`; without a group they get events in a private chat with their own
+  map and their own notifications.
+- Setup wizard, step 2: "Where should camera events go?" — "📱 Here, to this chat" finishes
+  the setup in one tap (flat mode in the private chat, the camera map is pinned there, `/add`
+  works right there) or "👥 To a group with topics" (as before). From 4 cameras the wizard
+  recommends topics. A group can be connected later with `/mode`; nothing is lost.
+- Flat mode in a group without topics: in the flat mode a regular group needs no topics and no
+  "Manage topics" right — only admin with "Delete messages" and "Pin messages". Once ready it
+  takes over the feed from private chats, and their maps say where the map moved. A group
+  without topics in the topics mode suggests `/mode flat`.
+- Setup progress: a pinned message in the owner's private chat — "Step 1/3 ✅ owner · Step 2/3
+  ⬜ where events go · Step 3/3 ⬜ first camera" — edited as the steps are done and unpinned
+  when all three are (the pin then belongs to the camera map).
+- "🤖 Android / 🍏 iPhone / 💻 Desktop" buttons after "To a group with topics" and under the
+  bot's "the group still needs …" message: where to create the group, turn on Topics, add the
+  bot and give it admin rights in that client (text, no screenshots; without topics in the
+  flat mode).
+- The group is rechecked by itself, no `/setup` needed: on every promotion of the bot
+  (`my_chat_member`), on the group's move to a supergroup, and once a minute for a day after
+  the bot reported what is missing — turning Topics on sends the bot no update. The same list
+  of missing things is not repeated in the group.
+- `/help` — short map of commands and buttons for the current mode; `/version` — installed
+  version and the latest release. Once a day the bot asks GitHub Releases for the latest
+  version (nothing about the installation is sent); a newer one shows on the camera map as
+  "⬆️ Version X is available — on the server: dozorcam update". `CCTV_UPDATE_CHECK=0`
+  (`update_check = false` in `[bot]`) turns the check off.
+- Camera by IP and login without knowing the RTSP path: if ONVIF is silent, the engine tries
+  typical paths of Reolink, TP-Link Tapo/VIGI, Uniview, Axis, Xiongmai/XMEye
+  (`/user=…&password=…&channel=1&stream=0.sdp`, built by the engine from the separately sent
+  login — the bot still refuses passwords inside an address, now also `password=` in the
+  path) and generic ones (`/live`, `/11`, `/live/ch00_0`, `/videoMain`, `/onvif1`), 3 s per
+  path, recognised brand first; the bot shows which path worked and offers the second stream
+  to the detector. All `401` means a wrong login, not "no stream". Passwords in a path are
+  masked everywhere like `user:***@`. Table and checked cameras: `docs/cameras.md`.
+- Documentation for 0.3.0: both READMEs are a short start (one-command install, three steps in
+  Telegram, update/backup/uninstall, delivery modes, sizing); the reference moved to `docs/` with
+  a table of contents — `docs/install.md` (installer, first 10 minutes, manual compose, update,
+  backup, uninstall, upgrading), `docs/reference.md` (modes, map, card, commands, people,
+  cameras, detector, configuration, network, TLS), `docs/sizing.md`, each with a Russian twin.
+- Website: "Install in 1 command", "The first 10 minutes", delivery modes with the map, card,
+  hashtags and merging, Update / Backup & restore / Uninstall, and a hardware calculator
+  (cameras, resolution, activity → RAM, CPU, disk, a board that fits; no external resources).
+- `scripts/sizing-bench.sh`: measures the engine on your machine with N synthetic cameras under
+  docker CPU and memory limits; the `sizing` workflow runs it on an amd64 GitHub runner.
+- For developers: `scripts/release-assets.sh` (installer assets and `SHA256SUMS` of a release),
+  CI job `install-smoke` (install → backup → uninstall → restore → update → rollback against a
+  local registry and mocked Telegram/GitHub), contract tests of the bot in every delivery mode.
+
+### Changed
+- An empty `/add` search says where it looked and why a camera may be missing (another
+  subnet): list the networks in `CCTV_DISCOVERY_NETWORKS` or enter the address (✍️ button).
+- Times were always Moscow time; now they follow `CCTV_TZ` (UTC if unset). The separate
+  `diag_utc_offset` setting is gone — the summary day follows `CCTV_TZ` as well. Moscow users:
+  set `CCTV_TZ=Europe/Moscow`.
+
+### Fixed
+- A Telegram outage (Bad Gateway, timeout, flood wait) while updating the pinned map or the
+  "Control" message is no longer taken for a deleted message: the bot keeps the message and
+  retries the edit on the next round. Before, each such error posted and pinned a new map next
+  to the old one. Only a message that is really gone is posted again.
+- The installer limits the buffer to 200 MB per stream (7 minutes of a 4 Mbit/s camera) instead
+  of half the buffer: the engine prunes each stream by its own limit only, and two 4 Mbit/s
+  cameras on a 2 GB machine (512 MB buffer, 256 MB per stream) overflowed the RAM buffer after
+  about eight minutes, which stops recording. Now the buffer holds about one camera per 240 MB
+  (2 GB RAM — 2 cameras, 4 GB — 4, 8 GB — 8), and the installer says so.
+- `dozorcam restart` re-creates the containers with the current `.env` (`up -d --force-recreate`)
+  instead of `docker compose restart`, which kept the old environment: a changed `CCTV_TZ`,
+  `CCTV_DISCOVERY_NETWORKS` or `CCTV_UPDATE_CHECK` silently did not apply.
+- The Telegram command menu ("/") follows the explicit installation language (`/lang`,
+  `CCTV_LANG`) for every client, like the rest of the output. Before, with `lang = "ru"` a
+  client with an English Telegram interface still saw the English menu. Without an explicit
+  language the menu still follows the client (Russian for a Russian client, English otherwise);
+  `/lang` updates the menu at once, not only after a restart.
+- `/add rtsp://…` (and an address typed after "✍️ Enter address") asked for the camera login
+  and password twice — once in the topic and once as a reply; now only as the reply.
+- The group setup now also asks for the bot admin right "Pin messages": without it the camera
+  panels were not pinned and creating a camera topic failed once before a retry. A missing pin
+  right no longer breaks the camera topic.
+- "No owner yet" and "wrong code" messages point to `dozorcam code` instead of `docker logs`.
+- A reply to the bot's request (login and password, camera name) was taken for a reply to a
+  frame ("this message is not a frame"); now it is the requested input unless the replied
+  message is a frame.
+- The first motion of a newly added camera was dropped ("motion for an unknown camera"): it
+  arrived before the bot synced the registry after the pipeline restart. Now an event of a
+  camera the bot does not know yet triggers the sync and is delivered.
+- Without the camera's own topic (flat mode, topic per location) the bot no longer points to
+  "its topic": the first frame, a new camera, retiring, renaming, the settings card and hints
+  talk about the map and the card instead.
+- The storage line of the Control topic shows the budget with one decimal: on a 2 GB machine
+  it said "of 1 GiB" for 0.75 GiB.
+
 ## [0.1.3] — 2026-10-08
 
 Everything a person reads now comes from the language catalogs: English by default, Russian

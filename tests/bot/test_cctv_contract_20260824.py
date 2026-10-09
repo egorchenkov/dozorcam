@@ -31,7 +31,7 @@ def make_config(tmp: pathlib.Path) -> config.Config:
         bot_token="0:test", chat_id=-100500, allowed_user_ids=frozenset({7}),
         bridge_base_url=BRIDGE, bridge_client_cert=material, bridge_client_key=material,
         bridge_ca_bundle=material, state_dir=tmp, runtime_dir=tmp,
-        max_snapshot_bytes=64, max_clip_bytes=128, lang="ru",
+        max_snapshot_bytes=64, max_clip_bytes=128, lang="ru", tz="Europe/Moscow",
     )
 
 

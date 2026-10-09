@@ -134,5 +134,29 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(64, cli.main(["rm"]))
 
 
+class InstallKnobsTest(unittest.TestCase):
+    """CCTV_TZ и CCTV_TELEGRAM_API: пустая строка из .env (compose подставляет "") — умолчание."""
+
+    def test_time_zone(self):
+        self.assertEqual("Asia/Kathmandu", str(settings.time_zone("Asia/Kathmandu")))
+        for value in ("", "  ", "Mars/Olympus", "../../etc/passwd"):
+            with self.subTest(value=value):
+                self.assertIsNone(settings.time_zone(value))
+        with mock.patch.dict(os.environ, {"CCTV_TZ": "Europe/Berlin"}):
+            self.assertEqual("Europe/Berlin", str(settings.time_zone()))
+
+    def test_tz_from_config_file_reaches_bot_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pathlib.Path(tmp, "config.toml").write_text('[common]\ntz = "America/St_Johns"\n')
+            env = {"CCTV_CONFIG_DIR": tmp}
+            self.assertEqual("America/St_Johns", settings.load("engine", env)["CCTV_TZ"])
+            self.assertEqual("America/St_Johns", settings.load("bot", env)["CCTV_TZ"])
+
+    def test_telegram_api(self):
+        self.assertEqual("https://api.telegram.org", settings.telegram_api({}))
+        self.assertEqual("https://api.telegram.org", settings.telegram_api({"CCTV_TELEGRAM_API": ""}))
+        self.assertEqual("http://127.0.0.1:8081", settings.telegram_api({"CCTV_TELEGRAM_API": "http://127.0.0.1:8081/"}))
+
+
 if __name__ == "__main__":
     unittest.main()

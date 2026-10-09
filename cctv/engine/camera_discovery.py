@@ -58,35 +58,97 @@ PASSWORD_DIGEST_TYPE = ("http://docs.oasis-open.org/wss/2004/01/"
                         "oasis-200401-wss-username-token-profile-1.0#PasswordDigest")
 
 # Шаблоны нужны там, где ONVIF молчит или врёт: у части устройств GetStreamUri
-# отдаёт адрес, недоступный снаружи их собственной подсети. Порядок в паре —
-# основной поток, затем поток для детектора.
+# отдаёт адрес, недоступный снаружи их собственной подсети, а у дешёвых камер
+# ONVIF нет вовсе — человек знает только IP, логин и пароль. Порядок в паре —
+# основной поток, затем поток для детектора; `label` — что показать человеку.
+# Перебор — по очереди, 3 с на путь (PATH_TIMEOUT); сначала шаблоны узнанной
+# марки, generic-пути — в конце.
 TEMPLATES: dict[str, dict] = {
     "hikvision": {
+        "label": "Hikvision/HiWatch",
         "main": "rtsp://{host}:{port}/Streaming/Channels/101",
         "sub": "rtsp://{host}:{port}/Streaming/Channels/102",
         "snapshot": "http://{host}/ISAPI/Streaming/channels/101/picture",
     },
     "dahua": {
+        "label": "Dahua/Imou/Amcrest",
         "main": "rtsp://{host}:{port}/cam/realmonitor?channel=1&subtype=0",
         "sub": "rtsp://{host}:{port}/cam/realmonitor?channel=1&subtype=1",
         "snapshot": "http://{host}/cgi-bin/snapshot.cgi",
     },
     "qualvision": {  # Tantos и прочие NVT на этой платформе
+        "label": "Tantos/QualVision",
         "main": "rtsp://{host}:{port}/stream?mode=real&idc=1&ids=1",
         "sub": "rtsp://{host}:{port}/stream?mode=real&idc=1&ids=2",
         "snapshot": "http://{host}/onvif/Snapshot",
     },
+    "reolink": {
+        "label": "Reolink",
+        "main": "rtsp://{host}:{port}/h264Preview_01_main",
+        "sub": "rtsp://{host}:{port}/h264Preview_01_sub",
+        "snapshot": None,  # снимок Reolink — с паролем в query, в реестр так не кладём
+    },
+    "tapo": {
+        "label": "TP-Link Tapo/VIGI",
+        "main": "rtsp://{host}:{port}/stream1",
+        "sub": "rtsp://{host}:{port}/stream2",
+        "snapshot": None,
+    },
+    "uniview": {
+        "label": "Uniview",
+        "main": "rtsp://{host}:{port}/media/video1",
+        "sub": "rtsp://{host}:{port}/media/video2",
+        "snapshot": None,
+    },
+    "axis": {
+        "label": "Axis",
+        "main": "rtsp://{host}:{port}/axis-media/media.amp",
+        "sub": "rtsp://{host}:{port}/axis-media/media.amp?resolution=640x360",
+        "snapshot": "http://{host}/axis-cgi/jpg/image.cgi",
+    },
+    # Xiongmai/XMEye: логин и пароль — в самом пути, RTSP-авторизации у камеры нет.
+    # Это не «логин в адресе от человека» (его бот по-прежнему не принимает): путь
+    # собирает мост из логина и пароля, присланных отдельным удаляемым сообщением,
+    # а наружу (чат, журнал, список реестра) адрес уходит через mask().
+    "xmeye": {
+        "label": "Xiongmai/XMEye",
+        "main": "rtsp://{host}:{port}/user={user}&password={password}&channel=1&stream=0.sdp",
+        "sub": "rtsp://{host}:{port}/user={user}&password={password}&channel=1&stream=1.sdp",
+        "snapshot": None,
+        "path_credentials": True,
+    },
     "generic": {
+        "label": "generic",
         "main": "rtsp://{host}:{port}/live/main",
         "sub": "rtsp://{host}:{port}/live/sub",
         "snapshot": None,
     },
+    "generic-live": {"label": "generic", "main": "rtsp://{host}:{port}/live", "sub": "", "snapshot": None},
+    "generic-11": {"label": "generic", "main": "rtsp://{host}:{port}/11",
+                   "sub": "rtsp://{host}:{port}/12", "snapshot": None},
+    "generic-ch00": {"label": "generic", "main": "rtsp://{host}:{port}/live/ch00_0",
+                     "sub": "rtsp://{host}:{port}/live/ch00_1", "snapshot": None},
+    "generic-videomain": {"label": "generic", "main": "rtsp://{host}:{port}/videoMain",
+                          "sub": "rtsp://{host}:{port}/videoSub", "snapshot": None},
+    "generic-onvif1": {"label": "generic", "main": "rtsp://{host}:{port}/onvif1",
+                       "sub": "rtsp://{host}:{port}/onvif2", "snapshot": None},
 }
+# Признак в имени производителя (ONVIF Manufacturer, баннер RTSP, марка из
+# vendor_setup) → шаблон, который пробовать первым.
 VENDOR_HINTS = (
-    ("hikvision", "hikvision"), ("ds-2", "hikvision"), ("dahua", "dahua"),
+    ("hikvision", "hikvision"), ("hiwatch", "hikvision"), ("ds-2", "hikvision"),
+    ("dahua", "dahua"), ("imou", "dahua"), ("amcrest", "dahua"),
     ("tantos", "qualvision"), ("qualvision", "qualvision"), ("nvt", "qualvision"),
-    ("hisharp", "generic"), ("axis", "generic"),
+    ("reolink", "reolink"), ("tapo", "tapo"), ("tp-link", "tapo"), ("vigi", "tapo"),
+    ("uniview", "uniview"), ("axis", "axis"),
+    ("xiongmai", "xmeye"), ("xmeye", "xmeye"), ("netsurveillance", "xmeye"), ("h264dvr", "xmeye"),
+    ("hisharp", "generic"),
 )
+# Перебор путей: на путь — не дольше стольких секунд; весь перебор — не дольше
+# PROBE_BUDGET (бот ждёт ответа моста по /add с запасом, см. bot/bridge.py).
+PATH_TIMEOUT = 3.0
+TEMPLATE_BUDGET = 60.0
+RTSP_PORT = 554
 
 
 class DiscoveryError(i18n.CodedError, RuntimeError):
@@ -154,21 +216,32 @@ class Detected:
     snapshot_url: str = ""
     profiles: list[Profile] = field(default_factory=list)
     verified: bool = False
+    template: str = ""  # сработавший шаблон (TEMPLATES), если поток найден перебором
 
     def summary(self) -> dict:
         """Показ человеку: пароль стёрт, оставлены только сведения о потоках."""
+        found = TEMPLATES.get(self.template) or {}
         return {"host": self.host, "vendor": self.vendor, "model": self.model,
                 "source": self.source, "verified": self.verified,
+                "template": found.get("label", ""), "path": template_path(self.main_url) if found else "",
                 "main_url": mask(self.main_url), "sub_url": mask(self.sub_url),
                 "snapshot_url": mask(self.snapshot_url),
                 "profiles": [p.as_dict() for p in self.profiles]}
 
 
+# Пароль в самом пути или query (XMEye: /user=…&password=…; снимки некоторых марок).
+PATH_SECRET = re.compile(r"(?i)\b(password|passwd|pwd|pass)=[^&;/?#\s]*")
+
+
 def mask(url: str | None) -> str:
-    """Затереть userinfo: в чат и журнал URL уходит без пароля."""
+    """Затереть userinfo и пароль в пути: в чат и журнал URL уходит без пароля."""
     if not url:
         return ""
-    return re.sub(r"://[^/@]+@", "://***@", url)
+    return PATH_SECRET.sub(r"\1=***", re.sub(r"://[^/@]+@", "://***@", url))
+
+
+def has_path_secret(url: str | None) -> bool:
+    return bool(PATH_SECRET.search(url or ""))
 
 
 TRANSLIT = {
@@ -647,25 +720,70 @@ def _rehost(url: str, host: str) -> str:
     return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
 
 
+def template_order(vendor: str) -> list[str]:
+    """Порядок перебора: шаблоны узнанной марки, затем остальные марки, generic — в конце."""
+    hay = (vendor or "").lower()
+    first = [name for name in TEMPLATES if not name.startswith("generic") and name in hay]
+    first += [name for needle, name in VENDOR_HINTS if needle in hay and name not in first]
+    rest = [name for name in TEMPLATES if name not in first and not name.startswith("generic")]
+    return first + rest + [name for name in TEMPLATES if name.startswith("generic") and name not in first]
+
+
+def template_url(name: str, kind: str, host: str, user: str, password: str, port: int = 554) -> str:
+    """Адрес потока по шаблону — с логином: в userinfo, а у XMEye ещё и в пути.
+
+    userinfo XMEye не нужен, но его требует loopback-прокси движка (без пароля
+    в userinfo он поток не поднимает), а сама камера заголовок авторизации
+    просто не спрашивает.
+    """
+    pattern = TEMPLATES[name].get(kind) or ""
+    if not pattern:
+        return ""
+    quote = lambda value: urllib.parse.quote(value, safe="")  # noqa: E731
+    url = pattern.format(host=host, port=port, user=quote(user), password=quote(password))
+    return with_credentials(url, user, password)
+
+
+def template_path(url: str) -> str:
+    """Путь потока для показа: без хоста и с затёртым паролем."""
+    parts = urllib.parse.urlsplit(mask(url))
+    return parts.path + (f"?{parts.query}" if parts.query else "")
+
+
 def _probe_templates(detected: Detected, user: str, password: str, timeout: float) -> None:
-    vendor = (detected.vendor or "").lower()
-    order = [name for name in TEMPLATES if name != "generic" and name in vendor]
-    order += [name for name in TEMPLATES if name not in order]
-    for name in order:
-        template = TEMPLATES[name]
-        main = with_credentials(template["main"].format(host=detected.host, port=554),
-                                user, password)
-        if not rtsp_ok(main, timeout=timeout):
+    """Перебор типовых путей: первый живой (DESCRIBE 200) — в реестр.
+
+    Порт 554 закрыт — перебирать нечего (иначе каждый путь ждал бы таймаут).
+    Ни один путь не принят, а камера на все отвечала 401 — значит, неверен
+    логин или пароль, а не путь: человек должен узнать именно это.
+    """
+    if not _port_open(detected.host, RTSP_PORT, min(timeout, PATH_TIMEOUT)):
+        return
+    per_path = min(timeout, PATH_TIMEOUT)
+    deadline = dt.datetime.now().timestamp() + TEMPLATE_BUDGET
+    codes: list[int] = []
+    for name in template_order(f"{detected.vendor} {detected.model}"):
+        if dt.datetime.now().timestamp() > deadline:
+            break
+        main = template_url(name, "main", detected.host, user, password, RTSP_PORT)
+        code = rtsp_describe(main, timeout=per_path)[0]
+        codes.append(code)
+        if code != 200:
             continue
+        template = TEMPLATES[name]
         detected.source = "template"
-        detected.vendor = detected.vendor or name
+        detected.template = name
+        if not detected.vendor and not name.startswith("generic"):
+            detected.vendor = template["label"]
         detected.main_url = main
-        sub = with_credentials(template["sub"].format(host=detected.host, port=554),
-                               user, password)
-        detected.sub_url = sub if rtsp_ok(sub, timeout=timeout) else ""
-        if template["snapshot"]:
+        sub = template_url(name, "sub", detected.host, user, password, RTSP_PORT)
+        detected.sub_url = sub if sub and rtsp_ok(sub, timeout=per_path) else ""
+        if template.get("snapshot"):
             detected.snapshot_url = template["snapshot"].format(host=detected.host)
         return
+    answered = [code for code in codes if code]
+    if answered and all(code == 401 for code in answered):
+        raise DiscoveryError("auth_failed")
 
 
 # --- проверка потока -------------------------------------------------------

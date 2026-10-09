@@ -151,7 +151,7 @@ class ActivationWizardTest(unittest.IsolatedAsyncioTestCase):
 
     # --- подтверждение и пароль -----------------------------------------------
     async def test_confirmation_word_is_required(self) -> None:
-        thread = await self.bot.ensure_console()
+        thread = (await self.bot.ensure_console()).thread_id
         asked = await self.bot.on_callback(OWNER, thread, self.button("actall", ",".join(HOSTS)))
         self.assertIn("необратимо", asked)
         self.assertIn("«активировать»", asked)
@@ -161,7 +161,7 @@ class ActivationWizardTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.state.take_input(OWNER))
 
     async def test_full_batch_with_partial_failure(self) -> None:
-        thread = await self.bot.ensure_console()
+        thread = (await self.bot.ensure_console()).thread_id
         asked = await self.start(thread)
         self.assertIn("8–16", asked)
         self.assertIn("сгенерировать", asked)
@@ -198,7 +198,7 @@ class ActivationWizardTest(unittest.IsolatedAsyncioTestCase):
                            "site": f"DS-2CD2543G2-IS {HOSTS[0]}", "probe_token": "tok-64"}], added)
 
     async def test_generate_word_lets_the_engine_make_the_password(self) -> None:
-        thread = await self.bot.ensure_console()
+        thread = (await self.bot.ensure_console()).thread_id
         await self.start(thread)
         await self.bot.on_text(OWNER, thread, "Сгенерировать", None, 600)
         self.assertEqual([{"hosts": HOSTS, "generate": True}], self.activation_posts())
@@ -209,13 +209,13 @@ class ActivationWizardTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(GENERATED, self.group_texts())
 
     async def test_english_words_work_too(self) -> None:
-        thread = await self.bot.ensure_console()
+        thread = (await self.bot.ensure_console()).thread_id
         await self.start(thread, word="ACTIVATE")
         await self.bot.on_text(OWNER, thread, "generate", None, 601)
         self.assertEqual([{"hosts": HOSTS, "generate": True}], self.activation_posts())
 
     async def test_weak_password_is_deleted_and_asked_again(self) -> None:
-        thread = await self.bot.ensure_console()
+        thread = (await self.bot.ensure_console()).thread_id
         await self.start(thread)
         self.start_reply = {"ok": False, "error_code": "password_weak"}
         answer = await self.bot.on_text(OWNER, thread, "abcdefghij", None, 700)
@@ -229,7 +229,7 @@ class ActivationWizardTest(unittest.IsolatedAsyncioTestCase):
         self.job.pop("password")
         for result in self.job["results"]:
             result.update(outcome="failed", stage="activate_refused")
-        thread = await self.bot.ensure_console()
+        thread = (await self.bot.ensure_console()).thread_id
         await self.start(thread)
         await self.bot.on_text(OWNER, thread, PASSWORD, None, 800)
         await self.bot._activation_task
@@ -239,14 +239,14 @@ class ActivationWizardTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("личк", summary)
 
     async def test_busy_engine(self) -> None:
-        thread = await self.bot.ensure_console()
+        thread = (await self.bot.ensure_console()).thread_id
         await self.start(thread)
         self.start_reply = {"ok": False, "error_code": "busy"}
         self.assertIn("другая активация", await self.bot.on_text(OWNER, thread, PASSWORD, None, 9))
         self.assertEqual([9], self.tg.deleted)
 
     async def test_stranger_cannot_activate(self) -> None:
-        thread = await self.bot.ensure_console()
+        thread = (await self.bot.ensure_console()).thread_id
         answer = await self.bot.on_callback(12345, thread, self.button("actall", ",".join(HOSTS)))
         self.assertEqual([], self.activation_posts())
         self.assertIsNone(self.state.take_input(12345))
@@ -259,7 +259,7 @@ class DmFailureTest(ActivationWizardTest):
     telegram = FailingDmTelegram
 
     async def test_full_batch_with_partial_failure(self) -> None:
-        thread = await self.bot.ensure_console()
+        thread = (await self.bot.ensure_console()).thread_id
         await self.start(thread)
         await self.bot.on_text(OWNER, thread, PASSWORD, None, 4242)
         await self.bot._activation_task

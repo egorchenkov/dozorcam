@@ -34,7 +34,7 @@ class WizardTelegram(DeletingTelegram):
         super().__init__()
         self.forum = True
         self.member = SimpleNamespace(status="administrator", can_manage_topics=True,
-                                      can_delete_messages=True)
+                                      can_delete_messages=True, can_pin_messages=True)
 
     async def get_chat(self, **kwargs):
         self._record("get_chat", kwargs)
@@ -43,9 +43,19 @@ class WizardTelegram(DeletingTelegram):
     async def get_me(self):
         return SimpleNamespace(id=1, username="ExampleCctvBot")
 
+    async def unpin_chat_message(self, **kwargs):
+        self._record("unpin_chat_message", kwargs)
+
     async def get_chat_member(self, **kwargs):
         self._record("get_chat_member", kwargs)
         return self.member
+
+    async def set_my_commands(self, commands, language_code=None):
+        self._record("set_my_commands", {"language_code": language_code,
+                                         "commands": [(c.command, c.description) for c in commands]})
+
+    async def delete_my_commands(self, language_code=None):
+        self._record("delete_my_commands", {"language_code": language_code})
 
 
 class WizardTest(unittest.IsolatedAsyncioTestCase):
@@ -93,7 +103,9 @@ class WizardTest(unittest.IsolatedAsyncioTestCase):
         answer = await self.bot.on_start(OWNER, OWNER, "private", [code.lower()], "ru")
         self.assertTrue(self.bot.allowed(OWNER))
         self.assertEqual("ru", self.bot.lang)  # язык — по language_code владельца
-        self.assertIn(i18n.t("wizard.owner_set", "ru"), answer)
+        # С 0.3.0 «владелец назначен» приходит одним сообщением с шагом «куда присылать».
+        self.assertIsNone(answer)
+        self.assertIn(i18n.t("wizard.owner_set", "ru"), self.tg.of("send_message")[-1]["text"])
         self.assertIsNone(self.bot.setup_code())
         # Тот же код второй раз владельца не меняет.
         await self.bot.on_start(STRANGER, STRANGER, "private", [code], "en")
@@ -155,8 +167,29 @@ class WizardTest(unittest.IsolatedAsyncioTestCase):
         await self.bot.on_bot_membership(GROUP - 1, "supergroup", OWNER, "administrator")
         self.assertIn(i18n.t("wizard.need_delete_right", "en"), self.tg.of("send_message")[-1]["text"])
         self.tg.member.can_delete_messages = True
+        # Без «Закрепления» панели камер не закрепить — это тоже просьба, а не молчание
+        # (прогон на чистой VM 09.10.2026: бот без права, тема камеры падала на pin).
+        self.tg.member.can_pin_messages = False
+        await self.bot.on_bot_membership(GROUP - 1, "supergroup", OWNER, "administrator")
+        self.assertIn(i18n.t("wizard.need_pin_right", "en"), self.tg.of("send_message")[-1]["text"])
+        self.assertEqual([], self.tg.of("create_forum_topic"))
+        self.tg.member.can_pin_messages = True
         await self.bot.on_bot_membership(GROUP - 1, "supergroup", OWNER, "administrator")
         self.assertEqual(1, len(self.tg.of("create_forum_topic")))
+
+    async def test_camera_topic_survives_missing_pin_right(self) -> None:
+        await self.claim()
+        await self.bot.bind_group(GROUP, OWNER)
+
+        async def no_pin(**kwargs):
+            raise RuntimeError("not enough rights to pin a message")
+
+        self.tg.pin_chat_message = no_pin
+        self.cameras = [{"camera_id": "replay", "title": "Стенд", "site": "", "status": "online",
+                         "last_frame_at": None, "motion": {"state": "watching"}}]
+        await self.bot.sync_registry()
+        self.assertIsNotNone(self.state.topic_for("replay"))
+        self.assertIsNotNone(self.state.panel_for("replay"))
 
     async def test_other_group_is_refused(self) -> None:
         await self.claim()
@@ -173,10 +206,12 @@ class WizardTest(unittest.IsolatedAsyncioTestCase):
     async def test_add_by_address_deletes_password_and_probes_bridge(self) -> None:
         await self.claim()
         await self.bot.bind_group(GROUP, OWNER)
-        console = await self.bot.ensure_console()
+        console = (await self.bot.ensure_console()).thread_id
         answer = await self.bot.on_add(OWNER, ["rtsp://127.0.0.1:28680/replay",
                                                "rtsp://127.0.0.1:28680/replay-detect"])
         self.assertIn("rtsp://127.0.0.1:28680/replay", answer)
+        # Просьба уходит одним ответом на /add, без второй копии в тему (прогон на VM 09.10).
+        self.assertNotIn(answer, [m["text"] for m in self.tg.of("send_message")])
         reply = await self.bot.on_text(OWNER, console, "stand s3cr3t", None, 555)
         self.assertEqual([555], self.tg.deleted)  # удалено до запроса к мосту
         order = [name for name, _ in self.tg.calls]
@@ -197,6 +232,9 @@ class WizardTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_add_before_group_points_to_the_group_step(self) -> None:
         await self.claim("en")
+        # Шаг «куда присылать» не пройден — /add отсылает к нему, а выбрана группа — к группе.
+        self.assertEqual(i18n.t("wizard.where_first", "en"), await self.bot.on_add(OWNER, []))
+        self.bot.routes.set_preset("camera")
         self.assertEqual(i18n.t("wizard.add_to_group", "en"), await self.bot.on_add(OWNER, []))
         self.assertEqual(i18n.t("no_access", "en"), await self.bot.on_add(STRANGER, []))
 
@@ -223,6 +261,32 @@ class WizardTest(unittest.IsolatedAsyncioTestCase):
         await self.bot.set_language(OWNER, ["pt-br"])
         self.assertEqual("pt-BR", self.bot.lang)
         self.assertEqual(i18n.t("no_access", "pt-BR"), await self.bot.set_language(STRANGER, ["ru"]))
+
+    def menu(self, lang: str) -> list[tuple[str, str]]:
+        return [(name, i18n.t(f"command.{name}", lang)) for name in bot_module.MENU_COMMANDS]
+
+    async def test_command_menu_follows_explicit_language(self) -> None:
+        # Явного языка нет — меню по языку клиента: общее en, ru — для русского клиента.
+        await self.bot.set_command_menu()
+        self.assertEqual([{"language_code": None, "commands": self.menu("en")},
+                          {"language_code": "ru", "commands": self.menu("ru")}],
+                         self.tg.of("set_my_commands"))
+        self.assertEqual([], self.tg.of("delete_my_commands"))
+        # lang = "ru" в конфиге — общее меню русское, список под ru снят: его видят все.
+        self.tg.calls.clear()
+        self.bot.cfg = dataclasses.replace(self.cfg, lang="ru")
+        await self.bot.set_command_menu()
+        self.assertEqual([{"language_code": None, "commands": self.menu("ru")}],
+                         self.tg.of("set_my_commands"))
+        self.assertEqual([{"language_code": "ru"}], self.tg.of("delete_my_commands"))
+        # /lang сильнее конфига и сразу меняет меню.
+        self.tg.calls.clear()
+        await self.claim()
+        self.tg.calls.clear()
+        await self.bot.set_language(OWNER, ["en"])
+        self.assertEqual([{"language_code": None, "commands": self.menu("en")}],
+                         self.tg.of("set_my_commands"))
+        self.assertEqual([{"language_code": "ru"}], self.tg.of("delete_my_commands"))
 
     def test_language_code_mapping(self) -> None:
         cases = {"ru": "ru", "en-US": "en", "pt-br": "pt-BR", "pt": "pt-BR", "uk": "uk",

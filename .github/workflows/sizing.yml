@@ -1,0 +1,33 @@
+# Замер ресурсов движка на amd64-раннере GitHub (scripts/sizing-bench.sh): цифры для
+# калькулятора железа на сайте. Только вручную: Actions → sizing → Run workflow.
+name: sizing
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "engine image"
+        default: "ghcr.io/egorchenkov/dozorcam:latest"
+
+permissions:
+  contents: read
+
+jobs:
+  amd64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - run: lscpu | sed -n '1,20p'; free -m; docker version --format '{{.Server.Version}}'
+      - run: docker pull -q "${{ inputs.image }}"
+      # камер, сцена, ядер: тихо 1/4/8, движение без пауз 1/4 на двух ядрах и 4 на одном.
+      - run: |
+          for spec in "1 quiet 2" "4 quiet 2" "8 quiet 2" "1 busy 2" "4 busy 2" "4 busy 1"; do
+            set -- $spec
+            scripts/sizing-bench.sh -n "$1" -s "$2" -c "$3" -m 4g -w 60 -d 120 \
+              -i "${{ inputs.image }}" -o sizing.jsonl | tail -1
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sizing-amd64
+          path: sizing.jsonl

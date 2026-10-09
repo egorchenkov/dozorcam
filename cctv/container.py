@@ -46,7 +46,6 @@ BACKOFF_MAX_SEC = 300.0
 BACKOFF_RESET_SEC = 600.0
 STOP_GRACE_SEC = 15.0
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
-TELEGRAM_API = os.environ.get("CCTV_TELEGRAM_API", "https://api.telegram.org")
 
 
 def log(message: str) -> None:
@@ -329,7 +328,7 @@ class BotSupervisor(Supervisor):
 def token_rejected(token: str, lang: str | None = None) -> str:
     """Причина, если Telegram отверг токен; сетевой сбой — не повод не запускаться."""
     try:
-        with urllib.request.urlopen(f"{TELEGRAM_API}/bot{token}/getMe", timeout=10):
+        with urllib.request.urlopen(f"{settings.telegram_api()}/bot{token}/getMe", timeout=10):
             return ""
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 404):

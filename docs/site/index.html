@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dozorcam — self-hosted camera watcher with a Telegram front end</title>
-<meta name="description" content="Dozorcam watches your IP cameras on your own Linux box, finds people and sends snapshots and clips to a Telegram group — one topic per camera. No cloud, no subscription.">
+<meta name="description" content="Dozorcam watches your IP cameras on your own Linux box, finds people and sends snapshots and clips to Telegram — to your chat, a group or a topic per camera. Install in one command. No cloud, no subscription.">
 <meta property="og:title" content="Dozorcam — your cameras, your Telegram, no cloud">
-<meta property="og:description" content="Self-hosted person detection for IP cameras with snapshots and clips in Telegram. Open source, Apache-2.0.">
+<meta property="og:description" content="Self-hosted person detection for IP cameras with snapshots and clips in Telegram. Install in one command. Open source, Apache-2.0.">
 <meta property="og:type" content="website">
 <link rel="alternate" hreflang="ru" href="ru/">
 <link rel="alternate" hreflang="en" href="./">
@@ -18,7 +18,7 @@
   <div class="wrap">
     <a class="logo" href="./"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#2a7d4f"/><circle cx="16" cy="16" r="8" fill="none" stroke="#fff" stroke-width="3"/><circle cx="16" cy="16" r="3" fill="#fff"/></svg>Dozorcam</a>
     <nav class="sections" aria-label="Sections">
-      <a href="#features">Features</a><a href="#install">Install</a><a href="#usage">How to use</a><a href="#cameras">Cameras</a><a href="https://github.com/egorchenkov/dozorcam">GitHub</a>
+      <a href="#features">Features</a><a href="#install">Install</a><a href="#modes">Modes</a><a href="#sizing">Hardware</a><a href="#usage">Commands</a><a href="https://github.com/egorchenkov/dozorcam">GitHub</a>
     </nav>
     <nav class="lang" aria-label="Language"><a href="./" aria-current="page">EN</a><a href="ru/" hreflang="ru" lang="ru">RU</a></nav>
   </div>
@@ -28,14 +28,14 @@
 <div class="wrap">
 <section class="hero" style="padding-top:48px">
   <div>
-    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Release <b><!--site:version-->0.1.3<!--/site--></b> · English or Russian throughout →</a>
+    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Release <b><!--site:version-->0.3.0<!--/site--></b> · install in one command, no forum group needed →</a>
     <h1>Your cameras, your Telegram, no cloud</h1>
     <p class="lead">Dozorcam watches IP cameras on your own Linux box, recognises <b>people</b> — not leaves,
-    shadows or the cat — and sends a snapshot with the person boxed and a clip of the moment to your
-    Telegram group. Each camera gets its own topic; the whole system is run from the chat.</p>
+    shadows or the cat — and sends a snapshot with the person boxed and a clip of the moment to Telegram:
+    right into your chat, to a family group, or to a topic per camera. The whole system is run from the chat.</p>
     <div class="cta">
-      <a class="btn primary" href="#install">Install in 3 steps</a>
-      <a class="btn" href="https://github.com/egorchenkov/dozorcam">Source on GitHub</a>
+      <a class="btn primary" href="#install">Install in 1 command</a>
+      <a class="btn" href="#sizing">Will it run on my box?</a>
     </div>
     <ul class="facts">
       <li>Free and open source</li><li>No cloud, no account</li><li>Hikvision, ONVIF, any RTSP</li><li>amd64 and arm64</li>
@@ -53,8 +53,8 @@
   a vendor cloud, a monthly fee or yet another app.</p>
   <div class="grid c3">
     <div class="card"><span class="ico">🏡</span><h3>House or summer cottage</h3><p>A few cameras at the gate, the door and the yard. You get a message when a person shows up — and not every time the wind moves a branch.</p></div>
-    <div class="card"><span class="ico">🛠</span><h3>Workshop, garage, small shop</h3><p>The family or the team share one Telegram group: everyone sees events, anyone can ask a camera for a fresh frame or a clip.</p></div>
-    <div class="card"><span class="ico">🖥</span><h3>Home server enthusiasts</h3><p>One Docker Compose file on a mini PC, a home server or an ARM board. Your video never leaves your network and your chat.</p></div>
+    <div class="card"><span class="ico">🛠</span><h3>Workshop, garage, small shop</h3><p>The family or the team share one Telegram group, or each person gets events in a private chat. Anyone allowed can ask a camera for a fresh frame or a clip.</p></div>
+    <div class="card"><span class="ico">🖥</span><h3>Home server enthusiasts</h3><p>One command on a mini PC, a home server or an ARM board. Your video never leaves your network and your chat.</p></div>
   </div>
 </section>
 </div>
@@ -65,14 +65,14 @@
   <p class="sub">Everything a small camera setup needs, and nothing that sends your yard to someone else's server.</p>
   <div class="grid c3">
     <div class="card"><span class="ico">👤</span><h3>Detects people, not motion</h3><p>A cheap motion gate with a per-camera noise floor, then a neural person detector (YOLOX-Tiny by default, YOLOv5/YOLOv8 optional). The threshold is calibrated per camera against the scene's own noise.</p></div>
-    <div class="card new"><span class="ico">🤝</span><h3>Confirmed by the camera</h3><p>Cameras with their own person detection (Hikvision over ONVIF) confirm a person: when the camera says “someone is here”, Dozorcam looks closer and does not miss a small or half-hidden figure.</p></div>
+    <div class="card"><span class="ico">🤝</span><h3>Confirmed by the camera</h3><p>Cameras with their own person detection (Hikvision over ONVIF) confirm a person: when the camera says “someone is here”, Dozorcam looks closer and does not miss a small or half-hidden figure.</p></div>
     <div class="card"><span class="ico">🪣</span><h3>Ignores things that never move</h3><p>A bag, a bucket or a bush that the model mistakes for a person is checked against the same spot seconds earlier — if nothing moved, it is not an event.</p></div>
-    <div class="card"><span class="ico">📸</span><h3>Snapshots and clips in Telegram</h3><p>A snapshot with the person boxed arrives in the camera's topic. One tap builds a clip around that moment from the recording buffer — playable right in the chat.</p></div>
-    <div class="card"><span class="ico">🎛</span><h3>Control from the chat</h3><p>The “Control” topic shows every camera's state and storage; buttons pause a camera, rename it, switch the detector model and set thresholds.</p></div>
-    <div class="card"><span class="ico">🔎</span><h3>Add cameras in a minute</h3><p><code>/add</code> finds cameras on the network (ONVIF, WS-Discovery, RTSP), asks for the login and deletes that message. A brand-new Hikvision is even activated for you.</p></div>
+    <div class="card"><span class="ico">📸</span><h3>Snapshots and clips in Telegram</h3><p>A snapshot with the person boxed, a clip around that moment on a tap. Events of one camera within a minute become one post; hashtags filter the feed by camera or place.</p></div>
+    <div class="card new"><span class="ico">🔀</span><h3>Your delivery mode</h3><p>Here in the private chat, one group without topics, a topic per camera or a topic per location. Switch any time with <code>/mode</code> — nothing is lost.</p></div>
+    <div class="card new"><span class="ico">📍</span><h3>Camera map and cards</h3><p>One pinned map with every camera, its state and today's events. Tap a camera for its card: frame, clip, pause, notifications, name, location, settings.</p></div>
+    <div class="card new"><span class="ico">🔎</span><h3>Add cameras in a minute</h3><p><code>/add</code> finds cameras (ONVIF, WS-Discovery), or tries the typical RTSP paths of Reolink, Tapo, Uniview, Axis and others by IP and login. A brand-new Hikvision is even activated for you.</p></div>
     <div class="card"><span class="ico">🔒</span><h3>No cloud — your data stays yours</h3><p>Video is a short rolling buffer in RAM on your node; the long-term copy is your own Telegram chat. No account, no telemetry, no subscription.</p></div>
-    <div class="card new"><span class="ico">🩺</span><h3>Explains its decisions</h3><p>A diagnostic journal records every rejected candidate and why, and a daily summary flags possible misses — so “why didn't it tell me?” has an answer.</p></div>
-    <div class="card"><span class="ico">📦</span><h3>Small and locked down</h3><p>One multi-arch image for engine and bot: non-root, read-only root filesystem, no capabilities, healthchecks, optional mutual TLS between the parts.</p></div>
+    <div class="card"><span class="ico">🩺</span><h3>Explains its decisions</h3><p>A diagnostic journal records every rejected candidate and why, and a daily summary flags possible misses — so “why didn't it tell me?” has an answer.</p></div>
   </div>
 </div>
 </section>
@@ -86,94 +86,183 @@
     <li><b>2 · Motion gate</b>Only frames that changed above the scene's noise go further.</li>
     <li><b>3 · Person detector</b>YOLO scores people; a person must hold for consecutive frames.</li>
     <li class="hl"><b>4 · Checks</b>Still-object filter; the camera's own person signal confirms or vetoes.</li>
-    <li><b>5 · Telegram</b>Snapshot with a box in the camera topic; clip on a tap.</li>
+    <li><b>5 · Telegram</b>Snapshot with a box where events go; clip on a tap.</li>
   </ol>
   <div class="grid c3" style="margin-top:22px">
-    <div class="card new"><h3>New in <!--site:version-->0.1.3<!--/site-->: one language throughout</h3><p>Everything you read is in the language you chose, English or Russian: the bot, camera search and add errors, the daily summary, the health check. Set it once for the whole installation with <code>CCTV_LANG</code> or per chat with <code>/lang</code>.</p></div>
-    <div class="card new"><h3>Fewer misses and false alarms</h3><p>Confirm mode: the camera's person signal opens a window where one frame is enough. A camera can trust its own silence, so an IR-lit bush at dawn no longer becomes a person.</p></div>
-    <div class="card new"><h3>Diagnostics</h3><p>Journal of rejected candidates with the reason and a daily summary that pairs cameras watching the same spot. <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Full changelog</a></p></div>
+    <div class="card new"><h3>New in <!--site:version-->0.3.0<!--/site-->: install in one command</h3><p>One line installs Docker if needed, checks the release files, asks for the bot token and prints a link with a QR code. <code>dozorcam update</code>, <code>backup</code>, <code>restore</code>, <code>uninstall</code> look after the rest.</p></div>
+    <div class="card new"><h3>Events where you want them</h3><p>No forum group needed any more: start in your private chat with one tap, move to a group or topics later. The setup wizard pins its progress and checks the group by itself.</p></div>
+    <div class="card new"><h3>A map instead of a panel</h3><p>A pinned camera map with cards, merged events, hashtags, <code>/invite</code> for one more person, times in your time zone. <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Full changelog</a></p></div>
   </div>
 </section>
 
 <section id="install">
-  <h2>Install in 3 steps</h2>
-  <p class="sub">You need a Linux machine (amd64 or arm64) with Docker and the compose plugin that can reach <code>api.telegram.org</code>, and IP cameras on the same network.</p>
-  <ol class="steps">
-    <li><h3>Create a Telegram bot</h3>Open <a href="https://t.me/BotFather">@BotFather</a>, send <code>/newbot</code> and copy the token.</li>
-    <li><h3>Start Dozorcam</h3>
-<pre><code>git clone https://github.com/egorchenkov/dozorcam.git &amp;&amp; cd dozorcam
-cp .env.example .env &amp;&amp; sed -i 's/^CCTV_BOT_TOKEN=.*/CCTV_BOT_TOKEN=&lt;token&gt;/' .env
-docker compose pull --ignore-pull-failures &amp;&amp; docker compose up -d</code></pre>
-      The image <code>ghcr.io/egorchenkov/dozorcam</code> is pulled for your architecture; to pin this release put
-      <code>CCTV_IMAGE_TAG=<!--site:version-->0.1.3<!--/site--></code> into <code>.env</code>, and <code>CCTV_LANG=ru</code> for Russian everywhere. If the registry is unreachable, compose builds the image locally.</li>
-    <li><h3>Claim the bot and add cameras</h3><code>docker compose logs bot | grep SETUP</code> prints a one-time code — send
-      <code>/start &lt;code&gt;</code> to the bot in a private chat and you are the owner. Create a group with <b>Topics</b>
-      turned on, add the bot as an admin (“Manage topics”, “Delete messages”) — it creates the “Control” topic.
-      Send <code>/add</code> there.</li>
+  <h2>Install in 1 command</h2>
+  <p class="sub">You need a Linux machine (amd64 or arm64, 2 GB RAM or more) that can reach <code>api.telegram.org</code>, IP cameras on the same network and a bot token: open <a href="https://t.me/BotFather">@BotFather</a>, send <code>/newbot</code>, copy the token.</p>
+<pre class="cmd"><code>curl -fsSL https://egorchenkov.github.io/dozorcam/install.sh | sh</code></pre>
+  <div class="grid c3" style="margin-top:16px">
+    <div class="card"><h3>Docker included</h3><p>No Docker or compose plugin — the installer offers the official <code>get.docker.com</code> script (y/N).</p></div>
+    <div class="card"><h3>Checked files</h3><p>The release files go to <code>~/dozorcam</code> and are checked against the release <code>SHA256SUMS</code>; the image is pinned by digest.</p></div>
+    <div class="card"><h3>Sized for your box</h3><p>The token is checked with Telegram, language and time zone come from the host, the RAM buffer from the machine memory.</p></div>
+  </div>
+  <p class="note">It ends with a link <code>t.me/&lt;your bot&gt;?start=&lt;code&gt;</code> and a QR code. Prefer to do it by hand?
+  <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/install.md#manual-install-with-docker-compose">Manual install with docker compose</a> ·
+  <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/install.md#install-in-one-command">non-interactive install</a>.</p>
+</section>
+
+<section id="first">
+  <h2>The first 10 minutes</h2>
+  <p class="sub">After the installer everything happens in Telegram. Mock-ups with the bot's real texts.</p>
+  <ol class="ten">
+    <li><h3>Open the link</h3><p>You are the owner. The bot pins the setup progress.</p>
+      <div class="chat mini"><div class="msg"><p><b>🧭 Dozorcam setup</b>
+Step 1/3 ✅ owner — you
+Step 2/3 ⬜ where to send events — choose below
+Step 3/3 ⬜ first camera — /add</p></div></div></li>
+    <li><h3>Where should events go?</h3><p>One tap for your private chat, or a group with topics.</p>
+      <div class="chat mini"><div class="msg"><p>Where should camera events go?</p></div>
+        <div class="btns"><span class="w">📱 Here, to this chat</span><span class="w">👥 To a group with topics</span></div></div></li>
+    <li><h3>Add a camera</h3><p><code>/add</code> searches, you tap, send “login password” — it is deleted at once.</p>
+      <div class="chat mini"><div class="msg"><p>New cameras found: 1 (already in the registry: 0).
+Choose a camera — next I will ask for the login and password.</p></div>
+        <div class="btns"><span>Camera 192.0.2.64</span><span>✍️ Enter address</span></div></div></li>
+    <li><h3>First frame</h3><p>The camera appears on the map; tap it for its card with a fresh frame and a clip.</p>
+      <div class="chat mini"><div class="msg"><p>📍 Cameras: 1 · online: 1 · events today: 0
+
+🟢 Yard — running</p></div>
+        <div class="btns"><span class="w">🟢 Yard</span><span>➕ Add camera</span><span>🔀 Where events go</span></div></div></li>
+    <li><h3>Turn detection on</h3><p>Look at the scene, then ⚙️ Settings → person detection. Walk past — a snapshot arrives.</p>
+      <div class="chat mini"><div class="msg"><p>Yard · Person detected: 2026-10-09 14:02:19 CEST
+#yard #home</p></div>
+        <div class="btns"><span class="w">🎞 Clip around this frame</span></div></div></li>
   </ol>
 </section>
 
-<section id="usage">
-  <h2>How to use it</h2>
-  <p class="sub">Everything happens in one Telegram group with Topics. Commands for the bot:</p>
-  <div class="table-scroll">
-  <table>
-    <tr><th>Command</th><th>What it does</th></tr>
-    <tr><td><code>/start &lt;code&gt;</code></td><td>Once, in a private chat: makes you the owner of the bot.</td></tr>
-    <tr><td><code>/setup</code></td><td>Finishes the group setup and tells you which admin right is missing.</td></tr>
-    <tr><td><code>/add</code></td><td>Searches the network for cameras; or <code>/add rtsp://host:port/path</code> for a camera outside the search.</td></tr>
-    <tr><td><code>/menu</code></td><td>Lists cameras and links to their topics.</td></tr>
-    <tr><td><code>/model</code></td><td>Switches the person detector model on the fly, with automatic rollback.</td></tr>
-    <tr><td><code>/lang en|ru</code></td><td>Interface language. Default: <code>CCTV_LANG</code> of the installation, else your Telegram language, else English.</td></tr>
-  </table>
+<section id="modes">
+  <h2>Where events go</h2>
+  <p class="sub">Three delivery modes. The owner switches them with <code>/mode</code>; cameras, their history and topics stay.</p>
+  <div class="grid c3">
+    <div class="card"><span class="ico">📱</span><h3>One chat, no topics</h3><p>Everything in one group — or, without a group, in a private chat of each person you <code>/invite</code>, with their own map and their own notifications. Good for 1–3 cameras.</p></div>
+    <div class="card"><span class="ico">🎥</span><h3>Topic per camera</h3><p>A forum group with Topics: each camera has its own topic with a pinned card, the map lives in “Control”. Good for 4 cameras and more.</p></div>
+    <div class="card"><span class="ico">🏷</span><h3>Topic per location</h3><p>Topics like “Home” and “Cottage”: events of several cameras inside, each with hashtags. Set a camera's place with 📍 Location on its card.</p></div>
   </div>
-  <div class="grid c3" style="margin-top:18px">
-    <div class="card"><h3>Camera topics</h3><p>Events arrive here. The pinned panel shows the stream and detector state; buttons: 📷 Frame, 🎞 Clip 30 s, 🔄 Status, 🔔 motion notifications, ⏸ Pause, ✏️ Name, ⚙️ Settings, 🗑 Retire.</p></div>
-    <div class="card"><h3>Clips</h3><p>Under every event — “🎞 Clip around this frame”: the clip is cut from the buffer around the moment the person was seen, even if the detector was a few seconds behind.</p></div>
-    <div class="card"><h3>“Control” topic</h3><p>State of all cameras and storage, ➕ Add camera, 🧠 Detector model, 🎯 Thresholds (auto-calibration or manual per camera). A new camera starts with person detection off: turn it on in ⚙️ Settings after a look at the scene.</p></div>
+  <div class="shots" style="margin-top:22px">
+    <figure class="shot">
+      <div class="chat" aria-label="Camera map, illustration">
+        <div class="topic">📌 Pinned</div>
+        <div class="msg"><p class="mono"><b>📍 Cameras: 4 · online: 4 · events today: 12</b>
+
+▪️ Cottage
+🟢 Gate — running
+    last motion: 2026-10-09 14:02:19 CEST
+🟢 Yard — running
+▪️ Home
+🟢 Door — running
+⏸ Garage — paused
+
+⬆️ Version 0.3.1 is available — on the server: dozorcam update</p></div>
+        <div class="btns"><span>🟢 Gate</span><span>🟢 Yard</span><span>🟢 Door</span><span>⏸ Garage</span><span>➕ Add camera</span><span>🔀 Where events go</span></div>
+      </div>
+      <figcaption>The camera map: one pinned message, cameras by location.</figcaption>
+    </figure>
+    <figure class="shot">
+      <div class="chat" aria-label="Camera card, illustration">
+        <div class="topic">📌 Pinned → card</div>
+        <div class="msg"><p>Camera: Gate
+Location: Cottage
+Status: 🟢 online
+Last motion: 2026-10-09 14:02:19 CEST
+Motion notifications: 🔔 on
+#gate #cottage</p></div>
+        <div class="btns"><span>📷 Frame</span><span>🎞 Clip 30 s</span><span>🔄 Status</span><span>🔔 Motion</span><span>⏸ Pause</span><span>📍 Location</span><span>⚙️ Settings</span><span>◀ To the map</span></div>
+      </div>
+      <figcaption>Tap a camera: the same message becomes its card. <code>/cam gate</code> anywhere.</figcaption>
+    </figure>
+    <figure class="shot">
+      <div class="chat" aria-label="Merged event, illustration">
+        <div class="topic"># Cottage</div>
+        <div class="msg"><img src="assets/event.png" width="480" height="270" alt="Event snapshot: a person on the path inside a detection box">
+          <p>Gate · Person detected: 2026-10-09 14:02:19 CEST
++3 within a minute · latest 14:02:58
+#gate #cottage</p></div>
+        <div class="btns"><span class="w">🎞 Clip around this frame</span></div>
+      </div>
+      <figcaption>A minute of events is one post with the freshest frame; a hashtag filters the feed.</figcaption>
+    </figure>
   </div>
 </section>
 
-<section id="screens">
-  <h2>How it looks</h2>
-  <p class="sub">Mock-ups with the bot's real texts and buttons. The scene is drawn; names and times are examples.</p>
-  <div class="shots">
-    <figure class="shot">
-      <div class="chat" aria-label="Camera topic, illustration">
-        <div class="topic"># Yard</div>
-        <div class="msg"><img src="assets/event.png" width="480" height="270" alt="Event snapshot: a person on the path inside a detection box">
-          <p>👤 <b>Person detected</b> · Yard · 14:02:19</p></div>
-        <div class="btns"><span class="w">🎞 Clip around this frame</span><span>📷 Frame</span><span>🎞 Clip 30 s</span></div>
-      </div>
-      <figcaption>An event in the camera topic.</figcaption>
-    </figure>
-    <figure class="shot">
-      <div class="chat" aria-label="Control topic, illustration">
-        <div class="topic"># Control</div>
-        <div class="msg"><p class="mono"><b>Video surveillance control panel</b>
+<section id="usage">
+  <h2>Commands</h2>
+  <p class="sub">The map and the cards cover everyday use; commands are there when you need them. <code>/help</code> shows the ones for your mode.</p>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Command</th><th>What it does</th></tr>
+    <tr><td><code>/add</code></td><td>Searches the network for cameras; <code>/add &lt;IP&gt;</code> or <code>/add rtsp://host:port/path</code> for a camera outside the search.</td></tr>
+    <tr><td><code>/cam &lt;name&gt;</code></td><td>A camera card here — by name, <code>#hashtag</code> or id.</td></tr>
+    <tr><td><code>/mode</code></td><td>Where events go: one chat, a topic per camera or a topic per location (owner).</td></tr>
+    <tr><td><code>/invite</code></td><td>A one-time link for one more person, valid 24 hours (owner, private chat).</td></tr>
+    <tr><td><code>/menu</code></td><td>List of cameras.</td></tr>
+    <tr><td><code>/model</code></td><td>Switches the person detector model on the fly, with automatic rollback.</td></tr>
+    <tr><td><code>/setup</code></td><td>Rechecks the group and tells you which admin right is missing.</td></tr>
+    <tr><td><code>/lang en|ru</code></td><td>Interface language. Default: <code>CCTV_LANG</code> of the installation, else your Telegram language, else English.</td></tr>
+    <tr><td><code>/help</code>, <code>/version</code></td><td>Commands and buttons for your mode; installed and latest version.</td></tr>
+  </table>
+  </div>
+  <p class="note">Reply to an event snapshot with any text to get a clip around that moment.
+  <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/reference.md">Full reference</a>.</p>
+</section>
 
-🟢 Yard — running
-    last motion: 2026-10-08 14:02:19 MSK
-🟢 Gate — running
-⏸ Garage — paused
+<section id="life">
+  <h2>Update, backup, uninstall</h2>
+  <p class="sub">The installer leaves a small helper next to the files: <code>~/dozorcam/dozorcam</code>.</p>
+  <div class="grid c3">
+    <div class="card"><h3>Update</h3><pre><code>dozorcam update</code></pre><p>Shows what changed, pulls the release by digest, checks health and rolls back by itself if the new version does not come up. The bot tells you when there is one.</p></div>
+    <div class="card"><h3>Backup &amp; restore</h3><pre><code>dozorcam backup
+dozorcam restore &lt;file&gt;</code></pre><p>One file with settings, the camera list and the bot state — back on this or another machine.</p></div>
+    <div class="card"><h3>Uninstall</h3><pre><code>dozorcam uninstall</code></pre><p>Stops and removes the containers; the state and the image only if you say so. Also <code>status</code>, <code>logs</code>, <code>restart</code>, <code>code</code>.</p></div>
+  </div>
+</section>
 
-Storage: 1.4 of 4 GiB, 2.6 GiB free
-Updated: 2026-10-08 14:05:02 MSK</p></div>
-        <div class="btns"><span>🔄 Refresh</span><span>➕ Add camera</span><span>🧠 Detector model</span><span>🎯 Thresholds</span></div>
-      </div>
-      <figcaption>The “Control” topic: the whole system at a glance.</figcaption>
-    </figure>
-    <figure class="shot">
-      <div class="chat" aria-label="Adding a camera, illustration">
-        <div class="topic"># Control</div>
-        <div class="msg"><p>Searching for cameras in 192.0.2.0/24. This takes up to a minute.</p></div>
-        <div class="msg"><p>New cameras found: 2 (already in the registry: 3).
-Choose a camera — next I will ask for the login and password.</p></div>
-        <div class="msg"><p>🔐 New Hikvision cameras without a password (not activated): 1.</p></div>
-        <div class="btns"><span class="w">🔐 Activate all (1)</span><span>Camera 192.0.2.64</span><span>✍️ Enter address</span></div>
-      </div>
-      <figcaption><code>/add</code>: search, pick, password — the topic appears with the first frame.</figcaption>
-    </figure>
+<section id="sizing">
+  <h2>Will it run on my box?</h2>
+  <p class="sub">Count your cameras — the calculator uses numbers measured on a live installation and on test machines with fixed CPU and memory limits.</p>
+  <div class="calc" id="calc">
+    <form class="calc-in" onsubmit="return false">
+      <label>Cameras <output id="c-n-out">4</output>
+        <input type="range" id="c-n" min="1" max="16" value="4"></label>
+      <label>Camera resolution
+        <select id="c-res">
+          <option value="4">2 MP / 1080p · ~4 Mbit/s</option>
+          <option value="6">4–5 MP · ~6 Mbit/s</option>
+          <option value="8">8 MP / 4K · ~8 Mbit/s</option>
+          <option value="2">H.265 or a low bitrate · ~2 Mbit/s</option>
+        </select></label>
+      <label>How busy are the scenes
+        <select id="c-act">
+          <option value="0.05">Quiet: a yard, a door at night</option>
+          <option value="0.15" selected>Usual: a house with a family</option>
+          <option value="0.4">Busy: a street, trees in the wind</option>
+        </select></label>
+      <label>Processor
+        <select id="c-arch">
+          <option value="arm">ARM64: Raspberry Pi 5, Orange Pi 5, cloud ARM</option>
+          <option value="n100">x86-64 mini PC: Intel N100 and similar</option>
+          <option value="x86">x86-64 desktop or server CPU, 2020 or newer</option>
+          <option value="a72">ARM64, older: Raspberry Pi 4</option>
+        </select></label>
+    </form>
+    <div class="calc-out" aria-live="polite">
+      <div class="res"><span>RAM</span><b id="r-ram">4 GB</b><small id="r-ram-d"></small></div>
+      <div class="res"><span>CPU</span><b id="r-cpu">4 cores</b><small id="r-cpu-d"></small></div>
+      <div class="res"><span>Disk</span><b>2 GB</b><small>the image ~0.8 GB plus updates; video stays in RAM</small></div>
+      <p class="pick" id="r-pick"></p>
+      <p class="warn" id="r-warn" hidden></p>
+    </div>
+  </div>
+  <noscript><p class="note">The calculator needs JavaScript. Rule of thumb: 1–2 cameras — 2 GB RAM and 2 cores, 3–4 — 4 GB and 4 cores, 5–8 — 8 GB and 4 cores.</p></noscript>
+  <div class="grid c2" style="margin-top:18px">
+    <div class="card"><h3>Measured, not guessed</h3><p>A live installation with 4 cameras on an ARM server (Neoverse-N1): about 0.5 core on average, the engine 1.6 GB with a 2 GB RAM buffer, the bot 66 MB, the image 800 MB. Plus a bench with 1–8 synthetic cameras under fixed CPU and memory limits on arm64 and amd64 — <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/sizing.md">method and numbers</a>.</p></div>
+    <div class="card"><h3>What will not run</h3><p>Boards with 1 GB RAM (Raspberry Pi 3, Zero 2): the system, Docker, the detector and even one camera's buffer do not fit. 32-bit ARM (armv7, older NAS) — there is no image. Pi 4 numbers are an estimate (about twice slower per core than the measured ARM).</p></div>
   </div>
 </section>
 
@@ -184,15 +273,16 @@ Choose a camera — next I will ask for the login and password.</p></div>
     <tr><th>Kind</th><th>How it is connected</th></tr>
     <tr><td>Hikvision</td><td>Found by the search; built-in RTSP and snapshot templates where ONVIF is silent. A new camera is activated from <code>/add</code> (password set, ONVIF user created). The camera's own person detection can gate or confirm Dozorcam's detector.</td></tr>
     <tr><td>ONVIF (Profile S)</td><td>Found automatically (local /24 networks and WS-Discovery); stream and snapshot addresses come from ONVIF.</td></tr>
+    <tr><td>By IP and login</td><td><code>/add &lt;IP&gt;</code>: typical RTSP paths of Reolink, TP-Link Tapo/VIGI, Uniview, Axis, Xiongmai/XMEye and generic ones are tried in turn; the bot shows which one worked.</td></tr>
     <tr><td>Any RTSP camera</td><td><code>/add rtsp://host:port/path</code>, optionally a second low-resolution stream for the detector; the snapshot is taken from the stream.</td></tr>
   </table>
   </div>
-  <p class="note">Tested live on Hikvision G0/G2/G5 and Tantos cameras. Other vendors should be activated with their own tools first; they should work over ONVIF/RTSP but are untested.</p>
+  <p class="note">Tested live on Hikvision G0/G2/G5 and Tantos cameras; other brands are checked by tests — <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/cameras.md">paths and checked cameras</a>.</p>
   <h3 style="margin-top:26px">Honest limits</h3>
   <ul class="limits">
     <li>No on-disk archive: the buffer holds minutes in RAM; the Telegram chat is the long-term copy.</li>
-    <li>Timestamps in captions are Moscow time (MSK) for now; the time zone is not configurable yet.</li>
-    <li>The node must reach <code>api.telegram.org</code>.</li>
+    <li>Timestamps follow <code>CCTV_TZ</code> (the installer takes it from the host); without it they are UTC and the map warns about it.</li>
+    <li>The node must reach <code>api.telegram.org</code>; once a day it asks GitHub for the latest release (nothing is sent, <code>CCTV_UPDATE_CHECK=0</code> turns it off).</li>
     <li>Interface languages: English and Russian.</li>
   </ul>
 </section>
@@ -224,13 +314,31 @@ Choose a camera — next I will ask for the login and password.</p></div>
 
 <footer>
   <div class="wrap">
-    <span>Dozorcam <!--site:version-->0.1.3<!--/site--></span>
+    <span>Dozorcam <!--site:version-->0.3.0<!--/site--></span>
     <a href="https://github.com/egorchenkov/dozorcam/releases">Releases</a>
     <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/README.md">Documentation</a>
     <a href="https://github.com/egorchenkov/dozorcam">GitHub</a>
     <span class="sep"></span>
     <a href="ru/" hreflang="ru" lang="ru">Русская версия</a>
   </div>
 </footer>
+<script>
+var CALC_TEXT = {
+  gb: " GB", cores: function (n) { return n + (n === 1 ? " core" : " cores"); },
+  ramD: "used ≈ {use} GB: video buffer {buf} GB ({min} min per camera), engine {eng} GB, bot and system {sys} GB",
+  cpuD: "average ≈ {avg} core, all cameras busy at once ≈ {peak} — above that the detector queues, events come later",
+  tmpfs: "Manual install: CCTV_BUFFER_TMPFS={tmpfs}m and CCTV_BUFFER_MAX_BYTES={cap} in .env (the installer sets both).",
+  pick: { 2: "Raspberry Pi 4/5 (2 GB+), Orange Pi 5, any mini PC", 4: "Raspberry Pi 5 (4–8 GB), an Intel N100 mini PC",
+          8: "Intel N100/N305 mini PC with 8 GB, a home server", 16: "a home server or a NAS with 16 GB (amd64/arm64)",
+          32: "a server with 32 GB — or split cameras between two installations" },
+  example: "Fits, for example: ",
+  slow: "Pi 4 numbers are an estimate: its cores are about twice slower than the measured ARM.",
+  lag: "So many busy scenes keep the detector queue full: events will come late. Use the camera's own person detection or split the cameras between two installations.",
+  est: "Mini PC numbers are an estimate: counted like the measured ARM server, which is on the safe side for an N100.",
+  split: "More than 16 GB: better split the cameras between two installations."
+};
+</script>
+<script src="assets/calc.js"></script>
 </body>
 </html>

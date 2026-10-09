@@ -17,8 +17,10 @@
 """
 from __future__ import annotations
 
+import os
 import unittest
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from cctv.engine import cctv_pipeline, person_diag
 from cctv.engine.onvif_motion_gate import OnvifMotionGate
@@ -221,11 +223,11 @@ class PairSummaryTest(unittest.TestCase):
         silent = summary["camera_signal_no_event"]
         self.assertEqual([T0 + 2010, T0 + 5000], [s["at"] for s in silent])
         self.assertTrue(silent[0]["partner_event"])
-        text = person_diag.render(summary, "2026-10-06", person_diag.parse_offset("+03:00"), "ru")
+        text = person_diag.render(summary, "2026-10-06", ZoneInfo("Europe/Moscow"), "ru")
         self.assertIn("парных 1, одиночных объяснимых 1, подозрительных 1", text)
         self.assertIn("door_out/x.jpg", text)
         self.assertIn("не вердикт", text)
-        english = person_diag.render(summary, "2026-10-06", person_diag.parse_offset("+03:00"), "en")
+        english = person_diag.render(summary, "2026-10-06", ZoneInfo("Europe/Moscow"), "en")
         self.assertIn("paired 1, single explained 1, suspicious 1", english)
         self.assertIn("not a verdict", english)
         self.assertNotRegex(english, "[А-Яа-яЁё]")
@@ -234,16 +236,23 @@ class PairSummaryTest(unittest.TestCase):
         import pathlib
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
-            journal = person_diag.Journal(pathlib.Path(tmp), person_diag.parse_offset("+03:00"), log=lambda _l: None)
+            journal = person_diag.Journal(pathlib.Path(tmp), ZoneInfo("Europe/Moscow"), log=lambda _l: None)
             journal.write({"kind": "event", "camera": "a", "at": 1791320400.0})  # 06.10 21:00 UTC = 07.10 00:00 МСК
             self.assertTrue((pathlib.Path(tmp) / "journal-2026-10-07.jsonl").exists())
             summary = person_diag.write_summary(journal, "2026-10-07", log=lambda _l: None)
             self.assertEqual(1, summary["cameras"]["a"]["events"])
             self.assertTrue((pathlib.Path(tmp) / "summary-2026-10-07.txt").exists())
 
-    def test_offset_parse(self):
-        self.assertEqual("+03:00", str(person_diag.parse_offset("+03:00"))[3:])
-        self.assertEqual(person_diag.parse_offset("bad"), person_diag.parse_offset("+00:00"))
+    def test_day_boundary_follows_cctv_tz(self):
+        """Сутки сводки — по CCTV_TZ: Катманду +05:45, Ньюфаундленд −02:30; без пояса — UTC."""
+        at = 1791320400.0  # 06.10 21:00 UTC
+        with mock.patch.dict(os.environ, {"CCTV_TZ": "Asia/Kathmandu"}):
+            self.assertEqual(("2026-10-07", "02:45:00"), (person_diag.local_day(at), person_diag.local_time(at)))
+        with mock.patch.dict(os.environ, {"CCTV_TZ": "America/St_Johns"}):
+            self.assertEqual(("2026-10-06", "18:30:00"), (person_diag.local_day(at), person_diag.local_time(at)))
+        for unset in ("", "Mars/Olympus", "../etc/passwd"):
+            with mock.patch.dict(os.environ, {"CCTV_TZ": unset}):
+                self.assertEqual("21:00:00", person_diag.local_time(at))
 
 
 if __name__ == "__main__":

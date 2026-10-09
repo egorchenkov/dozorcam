@@ -73,6 +73,10 @@ class FakeTelegram:
         self._record("edit_message_text", kwargs)
         return {"message_id": kwargs.get("message_id")}
 
+    async def edit_message_media(self, **kwargs):
+        self._record("edit_message_media", kwargs)
+        return {"message_id": kwargs.get("message_id")}
+
 
 class FlowTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -109,9 +113,9 @@ class FlowTest(unittest.IsolatedAsyncioTestCase):
                                 "camera_id": "city", "title": "Город",
                                 "site": "city", "occurred_at": "2026-08-24T10:00:00Z"})
 
-    def motion(self, event_id="e-motion"):
+    def motion(self, event_id="e-motion", camera_id="city"):
         return normalize_event({"event_id": event_id, "type": "motion.detected",
-                                "camera_id": "city", "occurred_at": "2026-08-24T10:01:00Z",
+                                "camera_id": camera_id, "occurred_at": "2026-08-24T10:01:00Z",
                                 "snapshot": {"url": f"{BRIDGE}/v1/media/opaque",
                                              "sha256": PHOTO_SHA, "bytes": len(PHOTO)}})
 
@@ -122,11 +126,15 @@ class FlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(self.tg.of("pin_chat_message")))
 
     async def test_passport_buttons_carry_no_camera_id_in_callback(self):
-        """Кадр, клип, статус, движение, пауза, имя, снятие и настройка камеры."""
+        """Кадр, клип, статус, движение, пауза, имя, снятие, настройка и локация камеры.
+
+        Девятая кнопка — «📍 Локация» (0.3.0): панель темы и карточка камеры на
+        карте — один код, тег локации задаётся с любой из них.
+        """
         await self.bot.on_event(self.registered())
         markup = self.tg.of("send_message")[0]["reply_markup"]
         datas = [b.callback_data for row in markup.inline_keyboard for b in row]
-        self.assertEqual(8, len(datas))
+        self.assertEqual(9, len(datas))
         self.assertTrue(all(d.startswith("cv:") for d in datas))
         self.assertFalse(any("city" in d for d in datas))
 
@@ -189,9 +197,17 @@ class FlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(caption.startswith("Движение"))
 
     async def test_motion_for_unknown_camera_is_ignored(self):
-        await self.bot.on_event(self.motion("m2"))
+        # Камеры нет ни у бота, ни в реестре моста — событие не доставляется и тему не заводит.
+        await self.bot.on_event(self.motion("m2", camera_id="ghost"))
         self.assertEqual([], self.tg.of("send_photo"))
-        self.assertEqual([], self.tg.of("create_forum_topic"))
+        self.assertIsNone(self.state.topic_for("ghost"))
+
+    async def test_first_motion_of_new_camera_is_delivered(self):
+        # Камера уже в реестре моста, но сверка после /add ещё не прошла (стенд LXD
+        # 09.10.2026: первое движение «по неизвестной камере» выбрасывалось).
+        await self.bot.on_event(self.motion("m3"))
+        self.assertEqual(1, len(self.tg.of("send_photo")))
+        self.assertIsNotNone(self.state.topic_for("city"))
 
     async def test_published_frame_offers_clip_around_itself(self):
         await self.bot.on_event(self.registered())

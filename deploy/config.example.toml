@@ -8,6 +8,8 @@
 # Мост и бот на одном узле говорят по loopback без TLS. Разнесённая установка —
 # internal_tls = true и сертификаты ниже (мост: server_*, client_ca; бот: bridge_*).
 # internal_tls = false
+# Часовой пояс (IANA): подписи бота и граница суток сводки детектора. Без него — UTC.
+# tz = "Europe/Berlin"
 
 [engine]
 # bind = "127.0.0.1"
@@ -28,7 +30,6 @@ human_gate_mode = "shadow"
 # human_confirm_hits = 1
 # Диагностика пропусков: журнал отказов и суточная сводка в state/diag.
 # diag_enabled = 1
-# diag_utc_offset = "+03:00"      # граница суток сводки
 # diag_pairs = "porch:hall"       # камеры на одно место с двух сторон (парность)
 # Детектор людей: семейство yolov5 | yolox | yolov8 и файл весов (имя ищется в
 # /etc/cctv/models, затем в /usr/share/cctv/models). Без настройки — YOLOX-Tiny из
@@ -52,6 +53,8 @@ human_gate_mode = "shadow"
 chat_id = -1001234567890          # forum-группа: тема на камеру + «Пульт»
 allowed_user_ids = [123456789]
 # owner_ids = [123456789]         # кому писать в личку об авариях (по умолчанию allowed_user_ids)
+# event_merge_sec = 60            # события камеры за столько секунд — одним постом («+N за минуту»); 0 — выкл.
+# update_check = false            # не спрашивать GitHub Releases о новой версии (по умолчанию — раз в сутки)
 # bridge_url = "http://127.0.0.1:8780"
 # events_port = 8781
 # С internal_tls = true:

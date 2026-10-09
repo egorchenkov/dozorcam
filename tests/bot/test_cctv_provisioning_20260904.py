@@ -122,7 +122,7 @@ class ProvisioningTest(unittest.IsolatedAsyncioTestCase):
         return f"cv:{action}:{self.state.issue_callback(camera_id, action, 600, payload)}"
 
     async def console(self) -> int:
-        return await self.bot.ensure_console()
+        return (await self.bot.ensure_console()).thread_id
 
     def texts(self) -> str:
         """Всё, что бот сказал в чат: тут пароля быть не может ни в каком виде."""

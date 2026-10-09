@@ -21,6 +21,8 @@ from .. import i18n, settings
 DEFAULT_STATE_DIR = settings.DEFAULT_STATE_DIR
 DEFAULT_RUNTIME_DIR = settings.DEFAULT_BUFFER_DIR + "/bot"
 DEFAULT_BRIDGE_URL = f"http://127.0.0.1:{settings.DEFAULT_BRIDGE_PORT}"
+# Выключатели: CCTV_UPDATE_CHECK=0 (и off/false/no) — выключено.
+OFF_WORDS = ("0", "false", "no", "off")
 
 
 class ConfigError(i18n.CodedError, RuntimeError):
@@ -100,6 +102,14 @@ class Config:
     internal_tls: bool = True
     # Язык интерфейса по умолчанию (en, ru, …); пусто — по language_code владельца.
     lang: str = ""
+    # Часовой пояс подписей (IANA); пусто — UTC с предупреждением в «Пульте».
+    tz: str = ""
+    # Склейка событий одной камеры: окно в секундах от первого поста; 0 — выключена.
+    event_merge_sec: int = 60
+    # Раз в сутки — последний релиз из GitHub Releases (строка на карте и в /version);
+    # CCTV_UPDATE_CHECK=0 — выключено. Адрес — для стенда и тестов.
+    update_check: bool = True
+    update_url: str = ""
 
     @property
     def db_path(self) -> pathlib.Path:
@@ -191,4 +201,8 @@ def load(env: dict[str, str] | None = None) -> Config:
         owner_ids=owners,
         internal_tls=tls,
         lang=(env.get("CCTV_LANG") or "").strip(),
+        tz=(env.get("CCTV_TZ") or "").strip(),
+        event_merge_sec=_int(env, "CCTV_EVENT_MERGE_SEC", 60),
+        update_check=(env.get("CCTV_UPDATE_CHECK") or "1").strip().lower() not in OFF_WORDS,
+        update_url=(env.get("CCTV_UPDATE_URL") or "").strip(),
     )

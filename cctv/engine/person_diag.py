@@ -28,12 +28,11 @@ import datetime
 import json
 import os
 import pathlib
-import re
 import sys
 import threading
 import time
 
-from .. import i18n
+from .. import i18n, settings
 
 # Нижняя граница кандидата: ниже — фон (p95 шума сцены на камерах 0.1–0.2).
 CANDIDATE_MIN = float(os.environ.get("CCTV_DIAG_CANDIDATE_MIN", "0.20"))
@@ -46,29 +45,23 @@ JOURNAL_KEEP_DAYS = int(os.environ.get("CCTV_DIAG_KEEP_DAYS", "30"))
 # детектора (10–60 с) и путь человека от одной камеры до другой.
 PAIRS = os.environ.get("CCTV_DIAG_PAIRS", "")
 PAIR_WINDOW_SEC = float(os.environ.get("CCTV_DIAG_PAIR_WINDOW_SEC", "120"))
-# Сутки сводки — по местному времени владельца, без зависимости от tzdata в образе.
-UTC_OFFSET = os.environ.get("CCTV_DIAG_UTC_OFFSET", "+00:00")
 ENABLED = os.environ.get("CCTV_DIAG_ENABLED", "1") != "0"
 
 # Приоритет причины эпизода: самая «близкая к событию» объясняет пропуск лучше.
 REASONS = ("still", "single_frame", "gate_floor", "camera_quiet", "below_threshold")
 
 
-def parse_offset(text: str = UTC_OFFSET) -> datetime.timezone:
-    match = re.fullmatch(r"([+-])(\d{1,2}):?(\d{2})?", (text or "").strip())
-    if not match:
-        return datetime.timezone.utc
-    sign = -1 if match.group(1) == "-" else 1
-    delta = datetime.timedelta(hours=int(match.group(2)), minutes=int(match.group(3) or 0))
-    return datetime.timezone(sign * delta)
+def zone() -> datetime.tzinfo:
+    """Сутки сводки и время в ней — по поясу установки (CCTV_TZ), без него UTC."""
+    return settings.time_zone() or datetime.timezone.utc
 
 
-def local_day(at: float, tz: datetime.timezone | None = None) -> str:
-    return datetime.datetime.fromtimestamp(at, tz or parse_offset()).strftime("%Y-%m-%d")
+def local_day(at: float, tz: datetime.tzinfo | None = None) -> str:
+    return datetime.datetime.fromtimestamp(at, tz or zone()).strftime("%Y-%m-%d")
 
 
-def local_time(at: float, tz: datetime.timezone | None = None) -> str:
-    return datetime.datetime.fromtimestamp(at, tz or parse_offset()).strftime("%H:%M:%S")
+def local_time(at: float, tz: datetime.tzinfo | None = None) -> str:
+    return datetime.datetime.fromtimestamp(at, tz or zone()).strftime("%H:%M:%S")
 
 
 def parse_pairs(text: str = PAIRS) -> list[tuple[str, str]]:
@@ -83,9 +76,9 @@ def parse_pairs(text: str = PAIRS) -> list[tuple[str, str]]:
 class Journal:
     """JSONL по суткам в ``<state>/diag``; один на процесс, пишут потоки камер."""
 
-    def __init__(self, root: pathlib.Path, tz: datetime.timezone | None = None,
+    def __init__(self, root: pathlib.Path, tz: datetime.tzinfo | None = None,
                  log=lambda line: print(line, flush=True)) -> None:
-        self.root, self.tz, self.log = root, tz or parse_offset(), log
+        self.root, self.tz, self.log = root, tz or zone(), log
         self.lock = threading.Lock()
 
     def path_for(self, day: str) -> pathlib.Path:
@@ -329,9 +322,9 @@ def _reason(code: str | None, lang: str) -> str:
     return i18n.t(key, lang) if i18n.has(key) else str(code)
 
 
-def render(summary: dict, day: str, tz: datetime.timezone | None = None, lang: str | None = None) -> str:
+def render(summary: dict, day: str, tz: datetime.tzinfo | None = None, lang: str | None = None) -> str:
     """Сводка человеку — на языке установки (CCTV_LANG, иначе en)."""
-    tz = tz or parse_offset()
+    tz = tz or zone()
     lang = lang or i18n.env_lang()
     t = lambda key, **params: i18n.t(key, lang, **params)  # noqa: E731
     lines = [t("diag.title", day=day)]

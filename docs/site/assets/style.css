@@ -128,6 +128,40 @@ td:first-child { white-space: nowrap; }
 .limits { margin: 0; padding-left: 20px; color: var(--muted); }
 .limits li { margin-bottom: 4px; }
 
+/* Установка одной командой */
+pre.cmd { font-size: 15px; padding: 14px 16px; border: 1px solid var(--accent); }
+
+/* Первые 10 минут: пять шагов с мини-макетами */
+ol.ten { list-style: none; counter-reset: t; padding: 0; margin: 0; display: grid;
+         grid-template-columns: repeat(5, 1fr); gap: 12px; }
+ol.ten > li { min-width: 0; counter-increment: t; background: var(--card); border: 1px solid var(--line);
+              border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+ol.ten > li h3::before { content: counter(t) " · "; color: var(--accent); }
+ol.ten > li > p { margin: 0; color: var(--muted); font-size: 14px; }
+.chat.mini { margin-top: auto; padding: 8px; font-size: 12.5px; }
+.chat.mini .btns span { font-size: 12px; }
+.card pre { margin: 6px 0 10px; }
+
+/* Калькулятор железа */
+.calc { display: grid; grid-template-columns: 1fr 1.1fr; gap: 18px; background: var(--card);
+        border: 2px solid var(--accent); border-radius: 16px; padding: 20px 22px; box-shadow: var(--shadow); }
+.calc > * { min-width: 0; }
+.calc-in { display: grid; gap: 14px; }
+.calc-in label { display: grid; gap: 6px; font-weight: 600; font-size: 15px; }
+.calc-in output { color: var(--accent); font-size: 20px; margin-left: 6px; }
+.calc-in select, .calc-in input { font: inherit; font-weight: 400; color: var(--fg); background: var(--bg);
+        border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%; max-width: 100%; }
+.calc-in input[type=range] { padding: 0; accent-color: var(--accent); border: 0; background: none; height: 28px; }
+.calc-out { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
+.calc-out .res:first-child { grid-column: 1 / -1; }
+.calc-out .res { background: var(--accent-soft); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; }
+.calc-out .res span { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.calc-out .res b { font-size: 26px; line-height: 1.2; margin: 2px 0 4px; }
+.calc-out .res small { font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.calc-out .pick, .calc-out .warn { grid-column: 1 / -1; margin: 2px 0 0; font-size: 15px; }
+.calc-out .warn { color: var(--warn); }
+.calc-out .warn::before { content: "⚠️ "; }
+
 footer { margin-top: 56px; border-top: 1px solid var(--line); padding: 22px 0 34px; font-size: 14px; color: var(--muted); }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 18px; }
 footer .sep { flex: 1; }
@@ -137,12 +171,16 @@ footer .sep { flex: 1; }
   nav.lang { margin-left: auto; }
   .hero { grid-template-columns: 1fr; gap: 28px; padding-top: 36px; }
   .grid.c3, .shots { grid-template-columns: 1fr 1fr; }
+  ol.ten { grid-template-columns: 1fr 1fr; }
+  .calc { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
   h1 { font-size: 34px; }
   h2 { font-size: 26px; }
   .lead { font-size: 17px; }
-  .grid.c3, .grid.c2, .shots { grid-template-columns: 1fr; }
+  .grid.c3, .grid.c2, .shots, ol.ten { grid-template-columns: 1fr; }
+  .calc { padding: 16px; }
+  .calc-out { grid-template-columns: 1fr; }
   ol.steps > li { padding: 58px 16px 14px 16px; }
   ol.steps > li::before { top: 16px; left: 16px; }
   .platform { grid-template-columns: 1fr; padding: 20px; }

@@ -54,7 +54,9 @@ class Invalid(i18n.CodedError, ValueError):
 
 
 def mask(url: str | None) -> str:
-    return re.sub(r"://[^/@]+@", "://***@", url or "")
+    """Без пароля: userinfo и пароль в пути (XMEye /user=…&password=…) затёрты."""
+    return re.sub(r"(?i)\b(password|passwd|pwd|pass)=[^&;/?#\s]*", r"\1=***",
+                  re.sub(r"://[^/@]+@", "://***@", url or ""))
 
 
 def _private_host(url: str, schemes: tuple[str, ...]) -> str:

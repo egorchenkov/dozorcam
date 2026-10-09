@@ -5,7 +5,7 @@ name: pages
 on:
   push:
     branches: [master]
-    paths: ["docs/site/**", ".github/workflows/pages.yml"]
+    paths: ["docs/site/**", "scripts/install.sh", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -26,6 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # curl -fsSL https://<owner>.github.io/dozorcam/install.sh | sh — тот же файл,
+      # что в релизе (sha256 в SHA256SUMS релиза).
+      - run: install -m 0644 scripts/install.sh docs/site/install.sh
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/site

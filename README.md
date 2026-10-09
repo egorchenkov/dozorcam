@@ -1,13 +1,13 @@
 # Dozorcam
 
-**English** · [Русский](README.ru.md) · [Website](https://egorchenkov.github.io/dozorcam/)
+**English** · [Русский](README.ru.md) · [Website](https://egorchenkov.github.io/dozorcam/) · [Documentation](docs/README.md)
 
 Self-hosted video surveillance with a Telegram front end. The engine keeps a short
 recording buffer from your IP cameras, looks for people (motion gate → YOLO) and sends
-snapshots and clips to a Telegram forum group: one topic per camera plus a "Control"
-topic with system status. No cloud: video lives in the node's RAM buffer and in your chat.
+snapshots and clips to Telegram: to your private chat, a group, or a forum group with a
+topic per camera or per location. No cloud: video lives in the node's RAM and in your chat.
 
-Current release: **<!--site:version-->0.1.3<!--/site-->** ·
+Current release: **<!--site:version-->0.3.0<!--/site-->** ·
 [Changelog](CHANGELOG.md) · [Releases](https://github.com/egorchenkov/dozorcam/releases)
 
 > Provided **as is** (see [CONTRIBUTING](CONTRIBUTING.md)): a one-person home project,
@@ -16,188 +16,115 @@ Current release: **<!--site:version-->0.1.3<!--/site-->** ·
 ## What it does
 
 - **People, not motion.** Motion gate with a per-camera noise floor, then an ONNX person
-  detector (YOLOX-Tiny bundled, YOLOv5/YOLOv8 optional) with a per-camera threshold
-  calibrated against the scene noise.
-- **Confirmed by the camera.** Cameras with their own person detection (Hikvision, ONVIF
-  FieldDetector) can gate the detector or, since 0.1.2, confirm a person
-  (`human_gate_mode = "confirm"`): small or half-hidden figures are not missed.
-- **Still objects are not people.** A box is checked against the same spot seconds earlier;
-  a bag or a bush that never moves is rejected. A camera can be told to trust its own
-  silence (`human_quiet_cameras`), so an IR-lit bush at dawn does not become a person.
-- **Snapshots and clips in Telegram.** Snapshot with the person boxed in the camera topic,
-  a clip around that moment on a tap, a fresh frame or a 30 s clip on demand.
-- **Control from the chat.** "Control" topic with every camera's state and storage, detector
-  model, thresholds; `/add` finds cameras and even activates a new Hikvision.
-- **Explains its decisions.** A diagnostic journal of rejected candidates with the reason and
-  a daily summary with possible misses (`python -m cctv diag-summary`).
-- **One language throughout.** Since 0.1.3 everything a person reads — the bot, camera
-  search and add errors, the daily summary, the healthcheck — is English or Russian, as you
-  choose: `CCTV_LANG` for the whole installation or `/lang` in the chat.
-- **No cloud.** No account, no telemetry; the long-term copy is your own chat.
+  detector (YOLOX-Tiny bundled, YOLOv5/YOLOv8 optional) with a per-camera threshold; cameras
+  with their own person detection can confirm it; things that never move are not people.
+- **Snapshots and clips in Telegram.** A snapshot with the person boxed, a clip around that
+  moment on a tap, a fresh frame or a 30 s clip on demand. Events of one camera within a
+  minute are merged into one post; hashtags `#gate #cottage` filter the feed by camera or place.
+- **Your delivery mode.** Here in the private chat (1–3 cameras), one group without topics, a
+  topic per camera or a topic per location — switch any time with `/mode`, nothing is lost.
+- **Camera map and cards.** One pinned map with every camera, its state and today's events;
+  tap a camera for its card: frame, clip, pause, notifications, name, location, settings.
+- **Setup from the chat.** A wizard with a pinned progress, `/add` finds cameras (ONVIF,
+  WS-Discovery, typical RTSP paths by IP and login) and even activates a new Hikvision.
+- **Explains its decisions.** Diagnostic journal of rejected candidates and a daily summary.
+- **English or Russian throughout** (`CCTV_LANG` or `/lang`), time in your zone (`CCTV_TZ`).
+- **No cloud.** No account, no telemetry; the long-term copy is your own chat. The only
+  request besides Telegram is a daily look at the latest release on GitHub (nothing is sent;
+  `CCTV_UPDATE_CHECK=0` turns it off).
 
-## Install in 3 commands
+## Quick start
 
-You need Linux (arm64 or amd64), Docker with compose, and a bot token from
-[@BotFather](https://t.me/BotFather).
+You need Linux (amd64 or arm64) with 2 GB RAM or more and a bot token from
+[@BotFather](https://t.me/BotFather) (`/newbot`). Then one command:
 
 ```bash
-git clone https://github.com/egorchenkov/dozorcam.git && cd dozorcam
-cp .env.example .env && sed -i 's/^CCTV_BOT_TOKEN=.*/CCTV_BOT_TOKEN=<token>/' .env
-docker compose pull --ignore-pull-failures && docker compose up -d
+curl -fsSL https://egorchenkov.github.io/dozorcam/install.sh | sh
 ```
 
-`docker compose pull` fetches the release image `ghcr.io/egorchenkov/dozorcam`; if it is
-not reachable, `up` builds the same image locally from the `Dockerfile`.
+The installer checks Docker (offers to install it), downloads the release files into
+`~/dozorcam` and checks them against `SHA256SUMS`, asks for the token, sizes the RAM buffer,
+starts the containers and prints a link with a QR code. The rest happens in Telegram:
 
-The rest happens in Telegram:
+1. **Open the link** (`t.me/<your bot>?start=<code>`) — you are the owner. Lost it:
+   `~/dozorcam/dozorcam code`.
+2. **Where should events go?** "📱 Here, to this chat" finishes in one tap; "👥 To a group with
+   topics" — the bot shows where to create the group and which admin rights to give
+   (Android / iPhone / Desktop buttons) and notices by itself when the group is ready.
+3. **`/add`** — the bot finds cameras, asks for the login and password (the message is
+   deleted), then a name. The first frame arrives; turn person detection on in ⚙️ Settings
+   of the camera card after a look at the scene.
 
-1. `docker compose logs bot | grep SETUP` prints a one-time code; send `/start <code>`
-   to the bot in a private chat — you become the owner. Interface language: `CCTV_LANG`
-   in `.env` (`en` or `ru`) for the whole installation, otherwise your Telegram language,
-   otherwise English; `/lang en|ru` in the chat overrides both.
-2. Create a group with **Topics** enabled, add the bot as an admin with "Manage topics"
-   and "Delete messages". The bot creates the "Control" topic itself and tells you if a
-   permission is missing (`/setup` to retry).
-3. `/add` — the bot scans for cameras (ONVIF/RTSP in the node's own /24 networks and via
-   WS-Discovery, or `CCTV_DISCOVERY_NETWORKS`). Tap a camera, send `login password` in one
-   message (deleted before it reaches the engine), give it a name — you get a topic and
-   the first frame. Camera outside discovery: `/add rtsp://host:port/path [rtsp://… detector stream]`.
-4. Optional: `/model` — person detector model (family and file), switched on the fly with
-   automatic rollback; see [docs/models.md](docs/models.md).
+Manual install with `docker compose`, non-interactive install and every installer option:
+[docs/install.md](docs/install.md).
+
+## Update, backup, uninstall
+
+```bash
+~/dozorcam/dozorcam update            # latest release: changelog, pull by digest, rollback if unhealthy
+~/dozorcam/dozorcam backup            # one tar.gz: .env, config/, camera registry, bot state
+~/dozorcam/dozorcam restore <file>    # back on this or another machine
+~/dozorcam/dozorcam uninstall         # stop and remove containers; --volumes, --image on request
+```
+
+Also `status`, `logs [-f] [engine|bot]`, `restart` (applies a changed `.env`) and `code`.
+The bot tells you about a new version on the camera map and in `/version`.
 
 ## How to use
 
 | Command | What it does |
 |---|---|
 | `/start <code>` | once, in a private chat: makes you the owner |
-| `/setup` | finishes the group setup, tells which admin right is missing |
-| `/add` | searches for cameras; `/add rtsp://host:port/path` for a camera outside the search |
-| `/menu` | cameras and links to their topics |
+| `/add` | searches for cameras; `/add <IP>` or `/add rtsp://host:port/path` for one outside the search |
+| `/menu` | list of cameras (the map itself is pinned) |
+| `/cam <name>` | a camera card here (by name, `#hashtag` or id) |
+| `/mode` | where events go: a topic per camera, a topic per location or one chat (owner) |
+| `/invite` | a one-time link for one more person, valid 24 h (owner, private chat) |
+| `/setup` | rechecks the group and tells which admin right is missing |
 | `/model` | person detector model, switched on the fly with automatic rollback |
-| `/lang en\|ru` | interface language (default: `CCTV_LANG`, else your Telegram language, else English) |
+| `/lang en\|ru` | interface language |
+| `/help`, `/version` | commands and buttons for your mode; installed and latest version |
 
-- **Camera topic** — events arrive here. The pinned panel shows stream and detector state;
-  buttons: 📷 Frame, 🎞 Clip 30 s, 🔄 Status, 🔔 motion notifications, ⏸ Pause, ✏️ Name,
-  ⚙️ Settings, 🗑 Retire. A new camera starts with person detection off — turn it on in
-  ⚙️ Settings after a look at the scene.
-- **Clips** — "🎞 Clip around this frame" under every event cuts the clip from the buffer
-  around the moment the person was seen, even if the detector was a few seconds behind.
-- **"Control" topic** — state of all cameras and storage, ➕ Add camera, 🧠 Detector model,
-  🎯 Thresholds (auto-calibration or manual per camera).
+Reply to an event snapshot with any text to get a clip around that moment. Modes, map,
+card, merging and every button: [docs/reference.md](docs/reference.md#delivery-modes).
+
+## Will it run on my box?
+
+| Cameras (2 MP) | RAM | CPU | Example |
+|---|---|---|---|
+| 1–2 | 2 GB | 2 cores | Raspberry Pi 4/5 (2 GB+), Orange Pi 5, any mini PC |
+| 3–4 | 4 GB | 4 cores | Raspberry Pi 5 (4–8 GB), Intel N100 mini PC |
+| 5–8 | 8 GB | 4 cores | Intel N100/N305 mini PC, a home server |
+| 9–16 | 16 GB | 4+ cores | a home server |
+
+Disk: about 2 GB for the image; video is kept in RAM, not on disk. **Will not run:** 1 GB
+RAM boards (Raspberry Pi 3, Zero 2), 32-bit ARM (armv7 — no image). Per-camera numbers,
+the calculator and how they were measured: [website](https://egorchenkov.github.io/dozorcam/#sizing),
+[docs/sizing.md](docs/sizing.md).
 
 ## Cameras
 
-| Kind | How |
-|---|---|
-| ONVIF (Profile S) | discovery, stream and snapshot URIs via ONVIF Media |
-| Any RTSP camera | `/add rtsp://host:port/path`, snapshot is taken from the stream |
-| Hikvision (ISAPI) | built-in RTSP and `/ISAPI/Streaming/channels/101/picture` templates where ONVIF is silent; optional person gate from the camera's own analytics (ONVIF FieldDetector, `human_gate_mode`) |
-
-Tested live on Hikvision G0/G2/G5 and Tantos cameras. A new, not yet activated Hikvision
-is activated from `/add` itself: discovery marks it "🔐", the bot asks for the confirmation
-word, then for the admin password (or generates one), and the engine activates the camera
-(ISAPI activation V3 or the older challenge protocol), checks the password with one login,
-enables ONVIF with a separate ONVIF user, checks the stream and adds the camera; "Activate
-all" does the same for every new camera found. The password is shown to the owner once, in
-a private chat, and a copy stays in the engine state (`activation-vault.json`, 0600).
-Other vendors should be activated with their own tools first; they should work over
-ONVIF/RTSP but are untested.
-
-## Networking: `network_mode: host`, honestly
-
-Both containers use the host network: the engine needs WS-Discovery multicast and direct
-RTSP to cameras, and the engine↔bot link without TLS is only allowed over loopback. The
-price is no network isolation for the containers: they see every host interface and can
-reach anything the host can. Everything else is locked down (non-root uid 10001,
-read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`), but if the node sits
-on an untrusted network, restrict egress with the host firewall. Keeping cameras on a
-separate VLAN without internet access is a good idea anyway.
-
-## Person detector: models, thresholds, weight licenses
-
-| Family | Default file | Start threshold | Weights license | Shipped in the image |
-|---|---|---|---|---|
-| YOLOX (default) | `yolox_tiny.onnx` | 0.30 | Apache-2.0 (Megvii) | yes |
-| YOLOv5 | `yolov5n.onnx` | 0.35 | AGPL-3.0 (Ultralytics) | no — download it yourself |
-| YOLOv8-style (YOLOv8, YOLO11) | `yolov8n.onnx` | 0.30 | AGPL-3.0 (Ultralytics) | no — download it yourself |
-
-- Only YOLOX-Tiny is bundled. AGPL-3.0 weights are not redistributed with this project:
-  if you put YOLOv5/YOLOv8 files into `config/models/`, their license applies to your
-  install, not to this repository's Apache-2.0 code.
-- Using YOLOv5/YOLOv8 anyway: download or export the ONNX file yourself, put it into
-  `config/models/` (readable by uid 10001) and pick it with `/model` or
-  `person_model_family`/`person_model` — step by step in
-  [docs/models.md](docs/models.md#where-to-put-your-own-weights).
-- Choose the model in `config.toml` (`person_model_family`, `person_model`) or from the
-  bot (`/model`, switched on the fly with automatic rollback). Installs that already ran
-  YOLOv5n keep it with the same 0.35 threshold until you choose otherwise.
-- **Threshold per camera.** After a model switch and on "🔄 Calibrate" ("🎯 Thresholds" in
-  "Control") the engine collects ~600 background frames per camera and sets the threshold
-  to the 99th percentile of the scene's background score plus a margin of 0.10, never
-  below the model start threshold. Confirmed passes (an event of `PERSON_HITS`=2
-  consecutive frames and/or the camera's own ONVIF human signal) cap it from above, so a
-  noisy scene does not lose people the engine has already seen. Until calibration
-  finishes, the start threshold of the model applies. Any camera can get a manual
-  threshold in the same menu; it wins over the auto value, survives restarts and stops
-  applying when the model is switched.
-- **Honest limit:** auto-calibration finds a threshold *above the noise*. It cannot measure
-  recall — how many people are missed — without labelled people, and people the model
-  never scores above the background are invisible to it. If a camera misses passes, set
-  its threshold manually. Details and bench numbers: [docs/models.md](docs/models.md).
+ONVIF (Profile S), any RTSP camera, cameras without ONVIF by IP and login (typical RTSP
+paths of Reolink, TP-Link Tapo/VIGI, Uniview, Axis, Xiongmai/XMEye are tried in turn), and
+Hikvision with activation of a new camera from `/add`. Tested live on Hikvision G0/G2/G5 and
+Tantos; table of paths and checked cameras: [docs/cameras.md](docs/cameras.md).
 
 ## Limitations
 
-- Timestamps in captions are Europe/Moscow (time zone is not configurable yet).
-- No on-disk archive: the buffer holds minutes in RAM; the Telegram chat is the long-term copy.
-- The node must reach `api.telegram.org`.
-- Threshold auto-calibration measures only background noise, not recall (see above).
-- UI languages: English and Russian. More languages (es, pt-BR, uk, id) are planned; their
-  files are empty skeletons for now and show English.
-- Comments in the code are mostly in Russian.
+- No on-disk archive: the buffer holds 10 minutes per camera in RAM; the chat is the long-term copy.
+- The node must reach `api.telegram.org`; containers use the host network ([why](docs/reference.md#networking)).
+- Threshold auto-calibration measures background noise, not recall ([details](docs/models.md)).
+- UI languages: English and Russian. Comments in the code are mostly in Russian.
 
-## Layout
+## Documentation
 
-```
-cctv/engine/   bridge (HTTP API), pipeline (recording buffer, motion gate, YOLO person
-               detector, still-object filter), RTSP credential proxy, provisioning, ONVIF discovery
-cctv/bot/      Telegram interface (python-telegram-bot), bridge client, event receiver
-cctv/i18n/     locales/<lang>.json
-cctv/container container supervisor (role engine | bot) and its healthcheck
-deploy/        config.example.toml, secrets.example.toml, reference systemd units (non-container install)
-tests/         pytest suite
-```
+[Install and update](docs/install.md) · [Reference: modes, commands, configuration,
+network, TLS](docs/reference.md) · [Detector models and thresholds](docs/models.md) ·
+[Cameras](docs/cameras.md) · [Sizing](docs/sizing.md) · [All documents](docs/README.md)
 
-## Configuration
-
-`.env` next to `compose.yml` is all most installs need (see `.env.example`: ports, RAM
-limits for the tmpfs buffer, image tag). Advanced settings live in the config directory
-(`CCTV_CONFIG_PATH`, default `./config`, mounted read-only): `config.toml` with
-`[common]`, `[engine]`, `[bot]` sections, `cameras.json`, `secrets.toml` — see
-`deploy/config.example.toml`. A key `foo` becomes `CCTV_FOO`; environment wins over the file.
-
-| What | Default | Variable |
-|---|---|---|
-| Config (read-only) | `/etc/cctv` | `CCTV_CONFIG_DIR` |
-| State (kilobytes: detector heartbeat, camera registry, bot SQLite) | `/var/lib/cctv/state` | `CCTV_STATE_DIR` |
-| Segment buffer (tmpfs) | `/var/lib/cctv/buffer` | `CCTV_BUFFER_DIR` |
-
-Person detector model (YOLOX-Tiny bundled; YOLOv5/YOLOv8 weights you add yourself),
-families and thresholds: [docs/models.md](docs/models.md).
-
-Engine and bot talk over loopback (`127.0.0.1:8780` bridge, `:8781` bot event receiver).
-For a split install set `internal_tls = true` — mutual TLS both ways.
-
-## Development
-
-```bash
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt && .venv/bin/pip install -e . --no-deps
-.venv/bin/python -m pytest -q
-```
-
-Contract tests need `ffmpeg`, `openssl` and `curl` and are skipped without them.
-Multi-arch image without QEMU: `docker buildx build --platform linux/arm64,linux/amd64 -t dozorcam:dev .`
-(needs the containerd image store, default since Docker 29, or `--output type=oci`).
+Development: `python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt &&
+.venv/bin/pip install -e . --no-deps && .venv/bin/python -m pytest -q` —
+[docs/reference.md](docs/reference.md#development).
 
 ## Built on <!--site:platform.en-->Artel<!--/site-->
 

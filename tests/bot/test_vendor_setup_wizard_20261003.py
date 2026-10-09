@@ -91,7 +91,7 @@ class VendorSetupWizardTest(unittest.IsolatedAsyncioTestCase):
         token = cand[0].callback_data.split(":", 2)[2]
         self.assertEqual((bot_module.CONSOLE_CAMERA, "cand", "192.0.2.30"),
                          self.state.resolve_callback(token))
-        asked = await self.bot.on_callback(OWNER, await self.bot.ensure_console(),
+        asked = await self.bot.on_callback(OWNER, (await self.bot.ensure_console()).thread_id,
                                            cand[0].callback_data)
         self.assertIn("192.0.2.30", asked)
         # И «Камер не нашлось» при этом не говорится.

@@ -35,6 +35,18 @@ jobs:
       - name: site and READMEs = release version
         run: python scripts/site-sync.py --check
 
+  # Установщик и обёртка dozorcam на образе этого коммита: локальный реестр (pull по
+  # digest), мок Telegram/GitHub, цикл install → backup → uninstall → restore → update →
+  # автооткат с ломаным healthcheck → uninstall (tests/install/install-smoke.sh).
+  install-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck scripts/install.sh scripts/dozorcam scripts/release-assets.sh tests/install/install-smoke.sh
+      - name: install.sh and dozorcam, end to end
+        run: tests/install/install-smoke.sh
+
   secrets:
     runs-on: ubuntu-24.04
     steps:

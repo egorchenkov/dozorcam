@@ -10,6 +10,7 @@ import asyncio
 import logging
 import sys
 
+from .. import settings
 from . import config
 from .bot import CctvBot
 from .bridge import Bridge
@@ -23,6 +24,8 @@ PANEL_REFRESH_INTERVAL_SEC = 60
 # Сторож смотрит реестр реже панелей: минута тишины ещё не поломка, а вот
 # четверть часа без кадров — уже новость, которую нужно сказать вслух.
 WATCHDOG_INTERVAL_SEC = 120
+# Проверка новой версии: тик раз в час, сам запрос к GitHub — раз в сутки (updates.py).
+UPDATE_TICK_SEC = 3600
 TG_TIMEOUT_SEC = 20
 
 log = logging.getLogger("cctv-tg-bot")
@@ -58,7 +61,9 @@ async def _amain() -> int:
 
     state = State(str(cfg.db_path))
     bridge = Bridge(cfg)
+    api = settings.telegram_api()
     application = (ApplicationBuilder().token(cfg.bot_token)
+                   .base_url(f"{api}/bot").base_file_url(f"{api}/file/bot")
                    # Ответ Telegram на sendMessage со стенда — до 5–6 с: при дефолтных
                    # 5 с PTB мастер ловил TimedOut на уже отправленных сообщениях.
                    .read_timeout(TG_TIMEOUT_SEC).write_timeout(TG_TIMEOUT_SEC).build())
@@ -103,12 +108,23 @@ async def _amain() -> int:
         while True:
             await asyncio.sleep(PANEL_REFRESH_INTERVAL_SEC)
             try:
+                # Группа ждёт тем или прав: включение тем приходит без апдейта боту.
+                await core.recheck_pending_group()
                 # Реестр может пополниться уже после старта (камера подключилась
                 # к Bridge позже бота). Одних панелей мало: они не создают тему.
                 await core.sync_registry()
                 await core.refresh_all_panels()
             except Exception as exc:  # индикатор не должен ронять сервис
                 log.info("обновление панелей отложено: %s", type(exc).__name__)
+
+    async def update_check():
+        while True:
+            try:
+                if await core.check_updates():
+                    await core.refresh_console()
+            except Exception as exc:  # проверка версии — удобство, сервис не роняет
+                log.info("проверка версии отложена: %s", type(exc).__name__)
+            await asyncio.sleep(UPDATE_TICK_SEC)
 
     async def watchdog():
         while True:
@@ -127,6 +143,7 @@ async def _amain() -> int:
     chores = asyncio.create_task(housekeeping())
     panels = asyncio.create_task(panel_refresh())
     health = asyncio.create_task(watchdog())
+    updates = asyncio.create_task(update_check()) if core.updates.enabled else None
 
     try:
         async with application:
@@ -141,6 +158,8 @@ async def _amain() -> int:
         chores.cancel()
         panels.cancel()
         health.cancel()
+        if updates is not None:
+            updates.cancel()
         if server is not None:
             server.shutdown()
         bridge.close()
@@ -167,19 +186,22 @@ def register_handlers(application, core, state) -> None:
         await reply(message, await core.on_start(
             user.id if user else None, chat.id if chat else None,
             chat.type if chat else "private", list(ctx.args or []),
-            getattr(user, "language_code", None)))
+            getattr(user, "language_code", None),
+            name=getattr(user, "full_name", "") or ""))
 
     async def on_setup(update, _ctx):
         user, chat, message = update.effective_user, update.effective_chat, update.effective_message
         if chat is None or chat.type == "private" or not core.allowed(user.id if user else None):
             return
-        await reply(message, await core.bind_group(chat.id, user.id))
+        answer = await core.bind_group(chat.id, user.id)
+        if answer:
+            await message.reply_text(answer, reply_markup=core.group_help_markup(answer))
 
     async def on_add(update, ctx):
         user, message = update.effective_user, update.effective_message
         if not core.allowed(user.id if user else None):
             return
-        await reply(message, await core.on_add(user.id, list(ctx.args or [])))
+        await reply(message, await core.on_add(user.id, list(ctx.args or []), chat_id=message.chat_id))
 
     async def on_lang(update, ctx):
         user, message = update.effective_user, update.effective_message
@@ -191,7 +213,43 @@ def register_handlers(application, core, state) -> None:
         user, message = update.effective_user, update.effective_message
         if not core.allowed(user.id if user else None):
             return
-        await reply(message, await core.on_model(user.id))
+        await reply(message, await core.on_model(user.id, chat_id=message.chat_id))
+
+    async def on_cam(update, ctx):
+        """/cam <имя> — карточка камеры здесь же; место проверяет ядро."""
+        user, message = update.effective_user, update.effective_message
+        if not core.allowed(user.id if user else None):
+            return
+        await reply(message, await core.on_cam(
+            user.id, list(ctx.args or []), chat_id=message.chat_id,
+            thread=getattr(message, "message_thread_id", None)))
+
+    async def on_mode(update, ctx):
+        user, message = update.effective_user, update.effective_message
+        if not core.allowed(user.id if user else None):
+            return
+        await reply(message, await core.on_mode(
+            user.id, list(ctx.args or []), chat_id=message.chat_id,
+            thread=getattr(message, "message_thread_id", None)))
+
+    async def on_help(update, _ctx):
+        user, message = update.effective_user, update.effective_message
+        if not core.allowed(user.id if user else None):
+            return
+        await reply(message, core.help_text(user.id))
+
+    async def on_version(update, _ctx):
+        user, message = update.effective_user, update.effective_message
+        if not core.allowed(user.id if user else None):
+            return
+        await reply(message, await core.version_text())
+
+    async def on_invite(update, _ctx):
+        user, chat, message = update.effective_user, update.effective_chat, update.effective_message
+        if not core.allowed(user.id if user else None):
+            return
+        await reply(message, await core.on_invite(
+            user.id, chat_id=chat.id if chat else None, chat_type=chat.type if chat else "private"))
 
     async def on_membership(update, _ctx):
         change = update.my_chat_member
@@ -211,12 +269,10 @@ def register_handlers(application, core, state) -> None:
         if not core.allowed(user.id if user else None):
             return
         message = update.effective_message
-        thread_id = getattr(message, "message_thread_id", None)
-        if thread_id is not None and state.camera_for_thread(thread_id):
-            await message.reply_text(await core.show_keyboard(thread_id),
-                                     reply_markup=core.reply_keyboard())
-            return
-        await message.reply_text(await core.menu_text(), reply_markup=core.reply_keyboard())
+        # В теме камеры — клавиатура с её именем, иначе список камер (маршрут решает ядро).
+        answer = await core.show_keyboard(getattr(message, "message_thread_id", None),
+                                          chat_id=message.chat_id)
+        await message.reply_text(answer or await core.menu_text(), reply_markup=core.reply_keyboard())
 
     async def on_button(update, _ctx):
         query = update.callback_query
@@ -225,6 +281,8 @@ def register_handlers(application, core, state) -> None:
             query.from_user.id if query.from_user else None,
             getattr(message, "message_thread_id", None),
             query.data,
+            chat_id=getattr(message, "chat_id", None),
+            message_id=getattr(message, "message_id", None),
         )
         # Тост Telegram — одна строка и максимум 200 символов: многострочный
         # статус показываем всплывающим окном и режем по лимиту API.
@@ -248,6 +306,7 @@ def register_handlers(application, core, state) -> None:
             message.text or "",
             reply_id,
             message.message_id,
+            chat_id=message.chat_id,
         )
         try:
             await message.reply_text(answer)
@@ -271,6 +330,11 @@ def register_handlers(application, core, state) -> None:
     application.add_handler(CommandHandler("add", on_add))
     application.add_handler(CommandHandler("lang", on_lang))
     application.add_handler(CommandHandler("model", on_model))
+    application.add_handler(CommandHandler("cam", on_cam))
+    application.add_handler(CommandHandler("mode", on_mode))
+    application.add_handler(CommandHandler("invite", on_invite))
+    application.add_handler(CommandHandler("help", on_help))
+    application.add_handler(CommandHandler("version", on_version))
     application.add_handler(ChatMemberHandler(on_membership, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE, on_migrate))
     application.add_handler(CallbackQueryHandler(on_button, pattern=r"^cv:"))
@@ -280,20 +344,9 @@ def register_handlers(application, core, state) -> None:
 async def announce_setup(core, bot) -> None:
     """Код владельца — в журнал (docker logs): единственный канал до /start.
 
-    Меню команд ставим на каждом старте: оно зависит от языка Telegram у
-    пользователя, а не от языка бота.
+    Меню команд ставим на каждом старте: подписи меняются с версией, язык — с /lang.
     """
-    from telegram import BotCommand
-
-    from .. import i18n
-
-    for lang in ("en", "ru"):
-        commands = [BotCommand(name, i18n.t(f"command.{name}", lang))
-                    for name in ("menu", "add", "model", "lang", "setup")]
-        try:
-            await bot.set_my_commands(commands, language_code=None if lang == "en" else lang)
-        except Exception as exc:  # меню — удобство, а не условие запуска
-            log.info("меню команд (%s) не установлено: %s", lang, type(exc).__name__)
+    await core.set_command_menu()
     code = core.setup_code()
     if code is None:
         return

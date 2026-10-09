@@ -391,7 +391,7 @@ class BotThroughEngineTest(EmulatedCameras, unittest.IsolatedAsyncioTestCase):
         good, legacy, rejecting = self.camera(2), self.camera(3, protocol="legacy"), \
             self.camera(4, fail="reject")
         hosts = ",".join(c.ip for c in (good, legacy, rejecting))
-        thread = await self.bot.ensure_console()
+        thread = (await self.bot.ensure_console()).thread_id
         token = self.bot.state.issue_callback(self.bot_module.CONSOLE_CAMERA, "actall", 600, hosts)
         await self.bot.on_callback(self.owner, thread, f"cv:actall:{token}")
         await self.bot.on_text(self.owner, thread, "активировать", None, 10)

@@ -85,7 +85,10 @@ class CatalogsTest(unittest.TestCase):
         self.assertEqual([], [key for key, text in en.items() if cyrillic.search(text)])
         # Без кириллицы в ru — только строки из одних подстановок и значков.
         neutral = {key for key, text in ru.items() if not cyrillic.search(text)}
-        self.assertEqual({"thr.button_set", "scan.manual_brand", "config.unreadable"}, neutral)
+        self.assertEqual({"thr.button_set", "scan.manual_brand", "config.unreadable", "time.format",
+                          "event.shared", "map.section", "map.page",
+                          # марки клиентов Telegram и «Dozorcam 0.3.0» — имена, а не текст
+                          "client.android.button", "client.ios.button", "version.current"}, neutral)
 
 
 class LanguageChoiceTest(unittest.TestCase):

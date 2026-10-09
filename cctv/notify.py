@@ -32,7 +32,6 @@ import urllib.request
 from . import i18n
 
 PREFIX_KEY = "owner_notify.prefix"
-TG_API = "https://api.telegram.org/bot{token}/{method}"
 ATTEMPTS = 3
 BACKOFF_S = (2, 8)
 
@@ -86,9 +85,10 @@ def seen_recently(text: str, now: float, path: pathlib.Path, window: float) -> b
 
 
 def telegram_send(token: str, chat_id: str, text: str, silent: bool = False) -> str:
+    from .settings import telegram_api
     payload = json.dumps({"chat_id": chat_id, "text": text,
                           "disable_notification": silent}).encode("utf-8")
-    request = urllib.request.Request(TG_API.format(token=token, method="sendMessage"),
+    request = urllib.request.Request(f"{telegram_api()}/bot{token}/sendMessage",
                                      data=payload, method="POST",
                                      headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=20) as response:

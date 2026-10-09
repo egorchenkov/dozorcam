@@ -20,6 +20,8 @@ import httpx
 KNOWN_ERRORS = ("camera_offline", "not_found", "unavailable", "timeout", "media_too_large",
                 "clip_window_empty", "storage_capacity")
 CHUNK = 64 * 1024
+# Ответ моста на пробу камеры: ONVIF плюс перебор путей RTSP — до минуты с запасом.
+PROBE_TIMEOUT_SEC = 90
 
 
 class BridgeError(RuntimeError):
@@ -186,7 +188,10 @@ class Bridge:
         body = {"host": host, "username": username, "password": password}
         if detect_url:
             body["detect_url"] = detect_url
-        return self._json("POST", "/v1/discovery/probes", json=body)
+        # Перебор типовых путей RTSP на мосту — до минуты (camera_discovery.TEMPLATE_BUDGET):
+        # общий таймаут моста (15 с) обрывал бы его на середине.
+        return self._json("POST", "/v1/discovery/probes", json=body,
+                          timeout=max(self.cfg.bridge_timeout_sec, PROBE_TIMEOUT_SEC))
 
     def add_camera(self, camera_id: str, title: str, site: str, probe_token: str) -> dict:
         return self._json("POST", "/v1/cameras",

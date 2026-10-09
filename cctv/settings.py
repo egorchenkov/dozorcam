@@ -19,10 +19,12 @@
 """
 from __future__ import annotations
 
+import datetime
 import os
 import pathlib
 import sys
 import tomllib
+import zoneinfo
 from typing import MutableMapping
 
 from . import i18n
@@ -79,6 +81,30 @@ def internal_tls(env: MutableMapping[str, str] | None = None) -> bool:
     """mTLS между мостом и ботом — опция для разнесённой установки."""
     env = os.environ if env is None else env
     return (env.get("CCTV_INTERNAL_TLS") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def telegram_api(env: MutableMapping[str, str] | None = None) -> str:
+    """Адрес Bot API: CCTV_TELEGRAM_API (свой telegram-bot-api, мок в CI), иначе api.telegram.org.
+
+    Пустое значение (compose подставляет "" для незаполненной строки .env) — умолчание.
+    """
+    env = os.environ if env is None else env
+    return (env.get("CCTV_TELEGRAM_API") or "https://api.telegram.org").strip().rstrip("/")
+
+
+def time_zone(name: str | None = None) -> datetime.tzinfo | None:
+    """Часовой пояс установки — CCTV_TZ (IANA, напр. ``Europe/Berlin``).
+
+    Не задан или неизвестен — None: показываем UTC, а бот предупреждает в «Пульте».
+    Это не TZ процесса: ffmpeg пишет имена сегментов под TZ=UTC, его не трогаем.
+    """
+    name = (os.environ.get("CCTV_TZ", "") if name is None else name).strip()
+    if not name:
+        return None
+    try:
+        return zoneinfo.ZoneInfo(name)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        return None
 
 
 def is_loopback_host(host: str | None) -> bool:

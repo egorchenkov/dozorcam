@@ -12,8 +12,10 @@ import hashlib
 import json
 import pathlib
 import sys
+import dataclasses
 import tempfile
 import unittest
+from zoneinfo import ZoneInfo
 
 
 import httpx  # noqa: E402
@@ -30,14 +32,18 @@ PHOTO = b"jpeg-bytes"
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 
 
+MOSCOW = ZoneInfo("Europe/Moscow")
+
+
 class MoscowTime(unittest.TestCase):
     def test_utc_marks_are_shown_in_moscow_time(self) -> None:
-        """По проводу UTC, человеку — МСК: время события искали, сложив три часа."""
-        self.assertEqual("04.09.2026 14:19:53 МСК", human_time("2026-09-04T11:19:53Z", "ru"))
-        self.assertEqual("04.09.2026 14:06:52 МСК", human_time("2026-09-04T11:06:52+00:00", "ru"))
+        """По проводу UTC, человеку — пояс установки: время события искали, сложив три часа."""
+        self.assertEqual("04.09.2026 14:19:53 МСК", human_time("2026-09-04T11:19:53Z", "ru", MOSCOW))
+        self.assertEqual("04.09.2026 14:06:52 МСК", human_time("2026-09-04T11:06:52+00:00", "ru", MOSCOW))
+        self.assertEqual("2026-09-04 14:06:52 MSK", human_time("2026-09-04T11:06:52Z", "en", MOSCOW))
 
     def test_date_rolls_over_correctly(self) -> None:
-        self.assertEqual("16.01.2026 02:40:00 МСК", human_time("2026-01-15T23:40:00Z", "ru"))
+        self.assertEqual("16.01.2026 02:40:00 МСК", human_time("2026-01-15T23:40:00Z", "ru", MOSCOW))
 
     def test_missing_and_broken_marks_do_not_break_caption(self) -> None:
         self.assertEqual("время неизвестно", human_time(None, "ru"))
@@ -226,7 +232,7 @@ class ControlTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_console_topic_and_button_scope(self) -> None:
         await self.register()
-        console = await self.bot.ensure_console()
+        console = (await self.bot.ensure_console()).thread_id
         await self.bot.refresh_console()
         names = [call["name"] for call in self.tg.of("create_forum_topic")]
         self.assertIn("Пульт", names)
@@ -356,6 +362,27 @@ class ControlTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("в работе", text)
         self.assertIn("Хранилище", text)
         self.assertIn("МСК", text)
+        self.assertNotIn("CCTV_TZ", text)
+
+    async def test_console_warns_when_time_zone_is_not_set(self) -> None:
+        """Без CCTV_TZ (или с неизвестным) — UTC и строка в «Пульте», а не молча чужое время."""
+        await self.register()
+        for value in ("", "Mars/Olympus"):
+            with self.subTest(tz=value):
+                self.bot.cfg = dataclasses.replace(self.cfg, tz=value)
+                self.bot.zone = bot_module.settings.time_zone(value)
+                text = await self.bot.console_text()
+                self.assertIn("Часовой пояс не задан", text)
+                self.assertIn("UTC", text)
+                self.assertNotIn("МСК", text)
+
+    def test_nonstandard_zone_in_captions(self) -> None:
+        """Пояс с минутами и летним временем: Катманду +05:45, Ньюфаундленд −02:30 (NDT)."""
+        self.assertEqual("2026-10-07 02:45:00 +0545",
+                         human_time("2026-10-06T21:00:00Z", "en", ZoneInfo("Asia/Kathmandu")))
+        self.assertEqual("06.10.2026 18:30:00 NDT",
+                         human_time("2026-10-06T21:00:00Z", "ru", ZoneInfo("America/St_Johns")))
+        self.assertEqual("2026-10-06 21:00:00 UTC", human_time("2026-10-06T21:00:00Z", "en"))
 
 
 if __name__ == "__main__":

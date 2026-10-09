@@ -1,0 +1,494 @@
+#!/bin/sh
+# dozorcam — управление установкой Dozorcam. Лежит рядом с compose.yml и .env
+# (кладёт install.sh в ~/dozorcam); POSIX sh, кроме docker и curl ничего не нужно.
+#
+#   dozorcam status | logs [-f] [engine|bot] | code | restart | start
+#   dozorcam update [-y] [ВЕРСИЯ] | backup [ФАЙЛ] | restore [-y] ФАЙЛ
+#   dozorcam uninstall [-y] [--volumes] [--image]
+#
+# Образ в .env закреплён по digest (CCTV_IMAGE_TAG=0.3.0@sha256:…): pull по тегу
+# не перепрыгнет молча через версии. update берёт версию из GitHub Releases,
+# показывает CHANGELOG между версиями и при провале healthcheck возвращает прежние
+# .env и compose.yml (прежний образ остаётся локально — откат без сети).
+#
+# Переменные для стенда и CI: DOZORCAM_REPO, DOZORCAM_GITHUB_API,
+# DOZORCAM_DOWNLOAD_URL (каталог с файлами релиза, в т.ч. file://),
+# DOZORCAM_HEALTH_TIMEOUT (с, по умолчанию 300), DOZORCAM_LANG (en|ru).
+set -eu
+
+DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+REPO=${DOZORCAM_REPO:-egorchenkov/dozorcam}
+GITHUB_API=${DOZORCAM_GITHUB_API:-https://api.github.com}
+DEFAULT_IMAGE=ghcr.io/egorchenkov/dozorcam
+HEALTH_TIMEOUT=${DOZORCAM_HEALTH_TIMEOUT:-300}
+RELEASE_FILES="compose.yml env.example dozorcam CHANGELOG.md"  # .env.example в релизе — env.example
+VOLUMES="engine-state bot-state"
+ENV_FILE=$DIR/.env
+
+# --- сообщения на языке установки ------------------------------------------------
+env_get() {  # $1 — ключ .env; печатает значение последней незакомментированной строки
+  [ -f "$ENV_FILE" ] || return 0
+  KEY=$1 awk 'index($0, ENVIRON["KEY"] "=") == 1 { value = substr($0, length(ENVIRON["KEY"]) + 2)
+                                                  sub(/[ \t]+#.*$/, "", value) }
+              END { if (value != "") print value }' "$ENV_FILE"
+}
+
+case "${DOZORCAM_LANG:-$(env_get CCTV_LANG)}" in
+  ru*) UI=ru ;;
+  en*) UI=en ;;
+  *) case "${LC_ALL:-${LANG:-}}" in ru*) UI=ru ;; *) UI=en ;; esac ;;
+esac
+
+say() { if [ "$UI" = ru ]; then printf '%s\n' "$2"; else printf '%s\n' "$1"; fi; }
+warn() { say "$1" "$2" >&2; }
+die() { warn "Error: $1" "Ошибка: $2"; exit 1; }
+
+has_tty() { (: </dev/tty) 2>/dev/null; }
+
+ask() {  # $1 en, $2 ru — вопрос да/нет, по умолчанию «нет»; без терминала — «нет»
+  has_tty || return 1
+  if [ "$UI" = ru ]; then printf '%s [y/N] ' "$2" >/dev/tty; else printf '%s [y/N] ' "$1" >/dev/tty; fi
+  read -r answer </dev/tty || return 1
+  case $answer in y*|Y*|д*|Д*) return 0 ;; esac
+  return 1
+}
+
+env_set() {  # $1 ключ, $2 значение: заменить строку (или её закомментированный образец), иначе дописать
+  KEY=$1 VALUE=$2 awk '
+    BEGIN { k = ENVIRON["KEY"]; v = ENVIRON["VALUE"] }
+    { lines[NR] = $0 }
+    index($0, k "=") == 1 && !active { active = NR }
+    (index($0, "# " k "=") == 1 || index($0, "#" k "=") == 1) && !sample { sample = NR }
+    END {
+      at = active ? active : sample
+      for (i = 1; i <= NR; i++) {
+        if (i == at) print k "=" v
+        else if (!(index(lines[i], k "=") == 1)) print lines[i]
+      }
+      if (!at) print k "=" v
+    }' "$ENV_FILE" >"$ENV_FILE.tmp"
+  cat "$ENV_FILE.tmp" >"$ENV_FILE"
+  rm -f "$ENV_FILE.tmp"
+}
+
+# --- docker -----------------------------------------------------------------------
+DOCKER=
+docker_init() {
+  [ -n "$DOCKER" ] && return 0
+  command -v docker >/dev/null 2>&1 || die "docker is not installed" "docker не установлен"
+  if docker info >/dev/null 2>&1; then
+    DOCKER=docker
+  elif command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
+    DOCKER="sudo docker"  # пользователя только что добавили в группу docker — до перелогина
+  else
+    die "no access to docker (is the daemon running? are you in the docker group?)" \
+        "нет доступа к docker (запущен ли демон? есть ли вы в группе docker?)"
+  fi
+}
+
+dock() {
+  # shellcheck disable=SC2086  # DOCKER — «docker» или «sudo docker»
+  $DOCKER "$@"
+}
+
+dc() { dock compose --project-directory "$DIR" -f "$DIR/compose.yml" --env-file "$ENV_FILE" "$@"; }
+
+image_name() { name=$(env_get CCTV_IMAGE); printf '%s\n' "${name:-$DEFAULT_IMAGE}"; }
+image_tag() { tag=$(env_get CCTV_IMAGE_TAG); printf '%s\n' "${tag:-latest}"; }
+image_ref() { printf '%s:%s\n' "$(image_name)" "$(image_tag)"; }
+current_version() { image_tag | sed 's/@.*//'; }
+project_name() { dc config 2>/dev/null | sed -n 's/^name: *//p' | head -n 1; }
+
+pin_image() {  # $1 — версия: pull по тегу, в .env — тег@digest
+  image=$(image_name)
+  say "Pulling $image:$1 ..." "Скачиваю $image:$1 ..."
+  dock pull "$image:$1" || return 1
+  digest=$(dock image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image:$1" |
+    PREFIX="$image@" awk 'index($0, ENVIRON["PREFIX"]) == 1 { print substr($0, length(ENVIRON["PREFIX"]) + 1); exit }')
+  [ -n "$digest" ] || { warn "no registry digest for $image:$1" "у $image:$1 нет digest реестра"; return 1; }
+  env_set CCTV_IMAGE_TAG "$1@$digest"
+}
+
+container_state() {  # $1 — сервис: healthy | unhealthy | starting | <состояние контейнера> | missing
+  cid=$(dc ps -q "$1" 2>/dev/null | head -n 1)
+  [ -n "$cid" ] || { echo missing; return; }
+  dock inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null ||
+    echo missing
+}
+
+wait_healthy() {  # оба сервиса healthy за HEALTH_TIMEOUT; unhealthy — сразу провал
+  say "Waiting for the health check (up to ${HEALTH_TIMEOUT} s) ..." \
+      "Жду проверку здоровья (до ${HEALTH_TIMEOUT} с) ..."
+  waited=0
+  while :; do
+    ready=1
+    for service in engine bot; do
+      state=$(container_state "$service")
+      case $state in
+        healthy) ;;
+        unhealthy)
+          warn "$service: unhealthy — see: $DIR/dozorcam logs $service" \
+               "$service: unhealthy — смотрите: $DIR/dozorcam logs $service"
+          return 1 ;;
+        *) ready=0 ;;
+      esac
+    done
+    [ "$ready" = 1 ] && { say "engine and bot are healthy." "engine и bot здоровы."; return 0; }
+    if [ "$waited" -ge "$HEALTH_TIMEOUT" ]; then
+      warn "not healthy after ${HEALTH_TIMEOUT} s (engine: $(container_state engine), bot: $(container_state bot))" \
+           "не здоровы за ${HEALTH_TIMEOUT} с (engine: $(container_state engine), bot: $(container_state bot))"
+      return 1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+}
+
+# --- релизы -----------------------------------------------------------------------
+latest_version() {
+  curl -fsSL --retry 3 -H 'Accept: application/vnd.github+json' "$GITHUB_API/repos/$REPO/releases/latest" |
+    sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1
+}
+
+release_url() { printf '%s\n' "${DOZORCAM_DOWNLOAD_URL:-https://github.com/$REPO/releases/download/v$1}"; }
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+fetch_release() {  # $1 версия, $2 каталог: файлы релиза, сверенные с SHA256SUMS
+  base=$(release_url "$1")
+  curl -fsSL --retry 3 -o "$2/SHA256SUMS" "$base/SHA256SUMS" ||
+    { warn "cannot download $base/SHA256SUMS" "не скачать $base/SHA256SUMS"; return 1; }
+  for name in $RELEASE_FILES; do
+    curl -fsSL --retry 3 -o "$2/$name" "$base/$name" ||
+      { warn "cannot download $base/$name" "не скачать $base/$name"; return 1; }
+    want=$(NAME=$name awk '$2 == ENVIRON["NAME"] || $2 == "*" ENVIRON["NAME"] { print $1 }' "$2/SHA256SUMS")
+    { [ -n "$want" ] && [ "$want" = "$(sha256_of "$2/$name")" ]; } ||
+      { warn "$name: sha256 does not match SHA256SUMS" "$name: sha256 не совпадает с SHA256SUMS"; return 1; }
+  done
+}
+
+version_gt() {  # $1 > $2 (X.Y.Z)
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    n = split(a, x, "."); m = split(b, y, "."); if (m > n) n = m
+    for (i = 1; i <= n; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 }
+    exit 1 }'
+}
+
+changelog_between() {  # $1 файл, $2 текущая, $3 новая: разделы (текущая; новая]
+  awk -v cur="$2" -v new="$3" '
+    function gt(a, b,   x, y, n, m, i) {
+      n = split(a, x, "."); m = split(b, y, "."); if (m > n) n = m
+      for (i = 1; i <= n; i++) { if (x[i] + 0 > y[i] + 0) return 1; if (x[i] + 0 < y[i] + 0) return 0 }
+      return 0 }
+    /^## \[/ { v = $2; gsub(/[][]/, "", v); show = (v ~ /^[0-9]/) && gt(v, cur) && !gt(v, new) }
+    show' "$1"
+}
+
+# --- команды ----------------------------------------------------------------------
+show_qr() {  # $1 ссылка: QR кодирует сам образ (на хосте может не быть ни python, ни qrencode)
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *UTF-8*|*utf-8*|*UTF8*|*utf8*) dc exec -T bot python -m cctv.qr "$1" ;;
+    *) dc exec -T bot python -m cctv.qr --ascii "$1" ;;
+  esac
+}
+
+cmd_code() {  # [--wait] — ссылка владельца и QR; --wait — ждать, пока бот запишет код
+  docker_init
+  tries=1
+  [ "${1:-}" = "--wait" ] && tries=24
+  while :; do
+    rc=0
+    out=$(dc exec -T bot python -m cctv.bot.owner_link 2>/dev/null) || rc=$?
+    case $rc in
+      0) break ;;
+      3) say "The owner is already set — open your bot in Telegram." \
+             "Владелец уже назначен — откройте своего бота в Telegram."
+         return 0 ;;
+    esac
+    tries=$((tries - 1))
+    if [ "$tries" -le 0 ]; then
+      warn "The bot has not issued the owner code yet. Try again: $DIR/dozorcam code" \
+           "Бот ещё не выдал код владельца. Повторите: $DIR/dozorcam code"
+      return 1
+    fi
+    sleep 5
+  done
+  code=${out%% *}
+  link=${out#* }
+  [ "$link" = "$out" ] && link=
+  echo
+  if [ -n "$link" ]; then
+    say "Open this link on your phone — it sends /start $code to the bot and makes you the owner:" \
+        "Откройте ссылку на телефоне — она отправит боту /start $code и сделает вас владельцем:"
+    echo
+    echo "    $link"
+    echo
+    show_qr "$link" || true
+  else
+    say "Send this to your bot in a private chat:" "Отправьте своему боту в личку:"
+    echo
+    echo "    /start $code"
+  fi
+  echo
+  say "Then create a group with Topics, add the bot there and make it an admin — it will guide you." \
+      "Дальше создайте группу с темами, добавьте туда бота и сделайте администратором — он подскажет."
+}
+
+cmd_start() {
+  docker_init
+  case $(image_tag) in
+    *@*) ;;
+    latest) ;;  # ручная установка без закрепления — как есть
+    *) pin_image "$(image_tag)" || die "cannot pull the image" "не удалось скачать образ" ;;
+  esac
+  dc up -d --no-build --remove-orphans
+  wait_healthy || die "Dozorcam did not become healthy" "Dozorcam не стал здоровым"
+  cmd_code --wait
+}
+
+cmd_status() {
+  docker_init
+  say "Version: $(current_version) ($(image_ref))" "Версия: $(current_version) ($(image_ref))"
+  dc ps
+  for service in engine bot; do
+    printf '%s: %s\n' "$service" "$(container_state "$service")"
+  done
+  if [ "$(env_get CCTV_UPDATE_CHECK)" != 0 ] && latest=$(latest_version 2>/dev/null) && [ -n "$latest" ]; then
+    if version_gt "$latest" "$(current_version)"; then
+      say "Update available: $latest — run: $DIR/dozorcam update" \
+          "Доступна версия $latest — выполните: $DIR/dozorcam update"
+    fi
+  fi
+}
+
+cmd_logs() {
+  docker_init
+  dc logs --tail 200 "$@"
+}
+
+cmd_restart() {
+  docker_init
+  # Не «compose restart»: тот перезапускает старые контейнеры со старым окружением, и
+  # правка .env (CCTV_TZ, CCTV_DISCOVERY_NETWORKS, CCTV_UPDATE_CHECK…) молча не доходила.
+  # Пересоздание с тем же образом и томами — состояние и реестр камер на месте.
+  dc up -d --force-recreate "$@"
+  wait_healthy
+}
+
+cmd_update() {
+  yes=0 target=
+  for arg in "$@"; do
+    case $arg in
+      -y|--yes) yes=1 ;;
+      -*) die "unknown option $arg" "неизвестный ключ $arg" ;;
+      *) target=${arg#v} ;;
+    esac
+  done
+  docker_init
+  current=$(current_version)
+  if [ -z "$target" ]; then
+    target=$(latest_version) || true
+    [ -n "$target" ] || die "cannot read the latest release from GitHub" "не удалось узнать последний релиз на GitHub"
+    if ! version_gt "$target" "$current"; then
+      say "Dozorcam $current is up to date." "Dozorcam $current — последняя версия."
+      return 0
+    fi
+  elif [ "$target" = "$current" ]; then
+    say "Dozorcam $current is already installed." "Dozorcam $current уже установлен."
+    return 0
+  fi
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  fetch_release "$target" "$tmp" || die "release $target is not available" "релиз $target недоступен"
+  say "What changed $current → $target:" "Что изменилось $current → $target:"
+  changelog_between "$tmp/CHANGELOG.md" "$current" "$target"
+  if [ "$yes" != 1 ] && ! ask "Update Dozorcam $current → $target?" "Обновить Dozorcam $current → $target?"; then
+    say "Cancelled (non-interactive: add -y)." "Отменено (без терминала — добавьте -y)."
+    return 1
+  fi
+  cp -p "$ENV_FILE" "$DIR/.env.prev"
+  cp -p "$DIR/compose.yml" "$DIR/compose.yml.prev"
+  cp "$tmp/compose.yml" "$DIR/compose.yml"
+  cp "$tmp/env.example" "$DIR/.env.example"
+  if pin_image "$target" && dc up -d --no-build --remove-orphans && wait_healthy; then
+    cp "$tmp/dozorcam" "$DIR/dozorcam.new"
+    chmod 0755 "$DIR/dozorcam.new"
+    mv "$DIR/dozorcam.new" "$DIR/dozorcam"
+    say "Updated to $target. Previous settings: .env.prev, compose.yml.prev" \
+        "Обновлено до $target. Прежние настройки: .env.prev, compose.yml.prev"
+    return 0
+  fi
+  warn "Update to $target failed — rolling back to $current." "Обновление до $target не удалось — откатываю на $current."
+  cp -p "$DIR/.env.prev" "$ENV_FILE"
+  cp -p "$DIR/compose.yml.prev" "$DIR/compose.yml"
+  dc up -d --no-build --remove-orphans || true
+  if wait_healthy; then
+    warn "Rolled back: Dozorcam $current is running." "Откат выполнен: работает Dozorcam $current."
+  else
+    warn "Rollback did not become healthy either — see: $DIR/dozorcam logs" \
+         "После отката тоже нездоров — смотрите: $DIR/dozorcam logs"
+  fi
+  return 1
+}
+
+volume_tar() {  # $1 том, $2 образ: tar содержимого в stdout (root в контейнере читает файлы uid 10001)
+  dock run --rm --network none --user 0 -v "$1:/data:ro" --entrypoint tar "$2" -C /data -cf - .
+}
+
+cmd_backup() {
+  docker_init
+  umask 077
+  out=${1:-$DIR/backups/dozorcam-$(date +%Y%m%d-%H%M%S).tar.gz}
+  mkdir -p "$(dirname -- "$out")"
+  project=$(project_name)
+  image=$(image_ref)
+  tmp=$(mktemp -d)
+  running=$(dc ps -q --status running)
+  if [ -n "$running" ]; then
+    say "Stopping Dozorcam for a consistent copy ..." "Останавливаю Dozorcam для целостной копии ..."
+    dc stop
+  fi
+  trap 'rm -rf "$tmp"; [ -n "$running" ] && dc start >/dev/null 2>&1' EXIT
+  cp -p "$ENV_FILE" "$DIR/compose.yml" "$tmp/"
+  [ -d "$DIR/config" ] && cp -Rp "$DIR/config" "$tmp/config"
+  mkdir "$tmp/volumes"
+  for volume in $VOLUMES; do
+    if dock volume inspect "${project}_$volume" >/dev/null 2>&1; then
+      volume_tar "${project}_$volume" "$image" >"$tmp/volumes/$volume.tar"
+    fi
+  done
+  printf 'dozorcam-backup 1\nversion=%s\nimage=%s\ncreated=%s\n' \
+    "$(current_version)" "$image" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$tmp/dozorcam-backup.txt"
+  tar -C "$tmp" -czf "$out" .
+  if [ -n "$running" ]; then
+    dc start >/dev/null
+    running=
+    wait_healthy || true
+  fi
+  say "Backup: $out — it contains the bot token and camera passwords, keep it private." \
+      "Копия: $out — в ней токен бота и пароли камер, храните её закрыто."
+}
+
+cmd_restore() {
+  yes=0 file=
+  for arg in "$@"; do
+    case $arg in
+      -y|--yes) yes=1 ;;
+      -*) die "unknown option $arg" "неизвестный ключ $arg" ;;
+      *) file=$arg ;;
+    esac
+  done
+  { [ -n "$file" ] && [ -f "$file" ]; } || die "usage: dozorcam restore [-y] BACKUP.tar.gz" \
+                                              "использование: dozorcam restore [-y] КОПИЯ.tar.gz"
+  docker_init
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  tar -C "$tmp" -xzf "$file"
+  { [ -f "$tmp/dozorcam-backup.txt" ] && [ -f "$tmp/.env" ]; } ||
+    die "$file is not a Dozorcam backup" "$file — не копия Dozorcam"
+  if [ "$yes" != 1 ] && ! ask "Replace current .env, config/ and state with $file?" \
+                              "Заменить текущие .env, config/ и состояние копией $file?"; then
+    say "Cancelled (non-interactive: add -y)." "Отменено (без терминала — добавьте -y)."
+    return 1
+  fi
+  [ -f "$ENV_FILE" ] && dc down --remove-orphans
+  umask 077
+  cp -p "$tmp/.env" "$ENV_FILE"
+  umask 022
+  cp -p "$tmp/compose.yml" "$DIR/compose.yml"
+  if [ -d "$tmp/config" ]; then
+    rm -rf "$DIR/config"
+    cp -Rp "$tmp/config" "$DIR/config"
+  fi
+  image=$(image_ref)
+  dock image inspect "$image" >/dev/null 2>&1 || dock pull "$image"
+  # Тома создаёт compose (с его метками), содержимое — из копии поверх пустого.
+  dc create --no-build
+  project=$(project_name)
+  for volume in $VOLUMES; do
+    [ -f "$tmp/volumes/$volume.tar" ] || continue
+    dock run --rm -i --network none --user 0 -v "${project}_$volume:/data" --entrypoint sh "$image" \
+      -c 'find /data -mindepth 1 -delete && tar -C /data -xpf -' <"$tmp/volumes/$volume.tar"
+  done
+  dc up -d --no-build --remove-orphans
+  wait_healthy
+  say "Restored from $file ($(current_version))." "Восстановлено из $file ($(current_version))."
+}
+
+cmd_uninstall() {
+  yes=0 volumes=0 image=0
+  for arg in "$@"; do
+    case $arg in
+      -y|--yes) yes=1 ;;
+      --volumes) volumes=1 ;;
+      --image) image=1 ;;
+      *) die "unknown option $arg" "неизвестный ключ $arg" ;;
+    esac
+  done
+  docker_init
+  if [ "$yes" != 1 ] && ! ask "Stop and remove the Dozorcam containers?" "Остановить и удалить контейнеры Dozorcam?"; then
+    say "Cancelled (non-interactive: add -y)." "Отменено (без терминала — добавьте -y)."
+    return 1
+  fi
+  project=$(project_name)
+  ref=$(image_ref)
+  dc down --remove-orphans
+  if [ "$volumes" = 1 ] || ask "Also delete the state (camera list, camera passwords, owner)? This cannot be undone." \
+                               "Удалить и состояние (список камер, пароли камер, владелец)? Это необратимо."; then
+    for volume in $VOLUMES; do
+      dock volume rm "${project}_$volume" >/dev/null 2>&1 || true
+    done
+    say "State volumes deleted." "Тома состояния удалены."
+  fi
+  if [ "$image" = 1 ] || ask "Also delete the image $ref?" "Удалить и образ $ref?"; then
+    dock image rm "$ref" >/dev/null 2>&1 || true
+    say "Image deleted." "Образ удалён."
+  fi
+  say "Kept in $DIR: .env (bot token), config/, backups/. Delete the folder yourself if you no longer need them." \
+      "Оставлено в $DIR: .env (токен бота), config/, backups/. Если не нужны — удалите каталог сами."
+}
+
+usage() {
+  say "Usage: $0 COMMAND
+  status                 containers, health, version, available update
+  logs [-f] [SERVICE]    last 200 log lines (engine, bot)
+  code                   owner link and QR again
+  restart [SERVICE]      re-create with the current .env, wait for health
+  update [-y] [VERSION]  update from GitHub Releases, roll back if unhealthy
+  backup [FILE]          .env, config/ and state into one tar.gz
+  restore [-y] FILE      restore from a backup
+  uninstall [-y] [--volumes] [--image]
+  start                  pull the pinned image, start, show the owner link" \
+"Использование: $0 КОМАНДА
+  status                 контейнеры, здоровье, версия, доступное обновление
+  logs [-f] [СЕРВИС]     последние 200 строк журнала (engine, bot)
+  code                   ещё раз ссылка владельца и QR
+  restart [СЕРВИС]       пересоздать с текущим .env, ждать здоровья
+  update [-y] [ВЕРСИЯ]   обновление из GitHub Releases, откат при нездоровье
+  backup [ФАЙЛ]          .env, config/ и состояние в один tar.gz
+  restore [-y] ФАЙЛ      восстановление из копии
+  uninstall [-y] [--volumes] [--image]
+  start                  скачать закреплённый образ, запустить, показать ссылку владельца"
+}
+
+[ -f "$ENV_FILE" ] || [ "${1:-}" = restore ] || [ "${1:-}" = help ] || [ $# -eq 0 ] ||
+  die "$ENV_FILE not found — run install.sh first" "нет $ENV_FILE — сначала запустите install.sh"
+
+command=${1:-help}
+[ $# -gt 0 ] && shift
+case $command in
+  status) cmd_status ;;
+  logs) cmd_logs "$@" ;;
+  code) cmd_code "$@" ;;
+  start) cmd_start ;;
+  restart) cmd_restart "$@" ;;
+  update) cmd_update "$@" ;;
+  backup) cmd_backup "$@" ;;
+  restore) cmd_restore "$@" ;;
+  uninstall) cmd_uninstall "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac
