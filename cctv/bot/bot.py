@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import datetime as dt
 import json
 import os
@@ -66,6 +67,12 @@ VIDEO_THUMB_WIDTH = 320  # лимит Telegram для thumbnail — 320 px и 20
 # Отсчёт от первого поста — непрерывно активная камера даёт пост в минуту.
 EVENT_MERGE_SEC = 60
 CONSOLE_PANEL_KEY = "console_panel"
+# Карта, ушедшая из места при смене режима: «<chat>:<тема>» → id сообщения. При
+# возврате в это место она снова становится картой, а не заводится новая рядом.
+RETIRED_HOME_KEY = "retired_home:{chat}:{thread}"
+# Разовая уборка после обновления с 0.3.0: его «Карта камер переехала» осталась в закрепе.
+STALE_MOVED_KEY = "stale_moved_unpinned_v1"
+STALE_MOVED_MAX = 5  # закрепов «переехала» подряд в одном чате — не больше, чем смен режима
 CONSOLE_CAMERA = "console"
 CONSOLE_TITLE = "console.title"
 # Карта камер (замена «Пульта»): до стольких камер кнопки всех камер на одном
@@ -208,9 +215,16 @@ ACTIVATION_PASSWORD_ERRORS = ("password_length", "password_charset", "password_w
 # камеру определяет тема, в которую пришло нажатие.
 # Ключ подписи → действие. Подписи зависят от языка, а клавиатура у поля ввода
 # остаётся старой после /lang, поэтому узнаём подписи всех языков каталога.
+# «🔔/🔕 Движение» — подписи до 0.3.1: клавиатура у поля ввода живёт, пока её не
+# сменят, поэтому старые подписи узнаются по-прежнему.
 KEYBOARD_ACTIONS = {"action.snap": "snap", "action.clip": "clip",
-                    "action.stat": "stat", "action.sub_on": "sub"}
-KEYBOARD_ROWS = (("action.snap", "action.clip"), ("action.stat", "action.sub_on"))
+                    "action.stat": "stat", "action.dm": "sub",
+                    "action.sub_on": "sub", "action.sub_off": "sub"}
+KEYBOARD_ROWS = (("action.snap", "action.clip"), ("action.stat", "action.dm"))
+# Кто нажал кнопку или прислал команду — для пульта без группы: у каждого
+# допущенного своя лента в личке, и ответ пульта уходит нажавшему (аудит 09.10, Б-9).
+# Контекст копируется в задачи, запущенные из обработчика (поиск камер, меню модели).
+_ASKER: contextvars.ContextVar[int | None] = contextvars.ContextVar("cctv_asker", default=None)
 MOTION_STATE_TEXT = {state: f"motion.{state}" for state in (
     "watching", "degraded", "behind", "blind", "disabled", "stalled", "unknown")}
 
@@ -305,6 +319,24 @@ def open_thumbnail(path: str | None):
         yield handle
     finally:
         handle.close()
+
+
+@contextlib.contextmanager
+def _asking(user_id: int | None):
+    token = _ASKER.set(user_id)
+    try:
+        yield
+    finally:
+        _ASKER.reset(token)
+
+
+def _unreachable(exc: Exception) -> bool:
+    """Личка человека недоступна насовсем: бот заблокирован или человек ни разу
+    не нажимал «Старт» (Forbidden, «chat not found»). Повтор не поможет."""
+    from telegram.error import BadRequest, Forbidden
+
+    return isinstance(exc, Forbidden) or (isinstance(exc, BadRequest)
+                                          and "chat not found" in str(exc).lower())
 
 
 def _transient(exc: Exception) -> bool:
@@ -436,7 +468,7 @@ class CctvBot:
         self._sync_lock = asyncio.Lock()
         self._unknown_synced: dict[str, float] = {}
         self.routes = Router(state, tg, group=lambda: self.chat_id, recipients=self._recipients,
-                             t=self._t, icon=topic_icon, log=log)
+                             t=self._t, icon=topic_icon, asker=_ASKER.get, log=log)
         self.merge_sec = getattr(cfg, "event_merge_sec", EVENT_MERGE_SEC)
         self._bridge_failures = 0
         self._code_attempts: dict[int, int] = {}
@@ -604,13 +636,30 @@ class CctvBot:
         else:
             lines.append(self._t("panel.bridge_silent"))
             lines.append(self._t("panel.detection", state=self._t(MOTION_STATE_TEXT["unknown"])))
-        if viewer is not None and viewer.private:
-            subscribed = viewer.chat_id in self.state.motion_subscribers(camera_id)
-        else:
-            subscribed = bool(self.state.motion_subscribers(camera_id))
-        lines.append(self._t("panel.notifications", state=self._t(
-            "panel.notify_on" if subscribed else "panel.notify_off")))
+        lines.append(self.notify_line(camera_id, viewer))
         return "\n".join(lines)
+
+    def _subscribers(self, camera_id: str) -> list[int]:
+        """Подписчики камеры из допущенных: снятый с доступа не считается."""
+        people = set(self._recipients())
+        return [user_id for user_id in self.state.motion_subscribers(camera_id) if user_id in people]
+
+    def notify_line(self, camera_id: str, viewer: Dest | None = None) -> str:
+        """Строка подписки — состояние, а не действие, и всегда про одно и то же.
+
+        В группе (общая панель, карточка на карте) — сколько человек получают
+        события камеры в личку: кнопку видят все, и строка не может быть про
+        «того, кто нажал последним». В личке — про этого человека: при группе
+        это личная копия со звуком, без группы личка и есть лента, и подписка —
+        её звук.
+        """
+        if viewer is not None and viewer.private:
+            on = viewer.chat_id in self._subscribers(camera_id)
+            if self.chat_id is None:
+                return self._t("panel.sound_on" if on else "panel.sound_off")
+            return self._t("panel.dm_you_on" if on else "panel.dm_you_off")
+        count = len(self._subscribers(camera_id))
+        return self._t("panel.dm_count", count=count) if count else self._t("panel.dm_nobody")
 
     async def refresh_panel(self, camera_id: str, *, user_id: int | None = None,
                             force: bool = False, cards: bool = True) -> None:
@@ -631,7 +680,9 @@ class CctvBot:
             camera = next((c for c in cameras if c.camera_id == camera_id), None)
         except BridgeError:
             camera = None
-        text = self.panel_text(camera_id, camera, user_id=user_id)
+        # Панель темы общая: ни строка, ни кнопки не зависят от того, кто нажал
+        # (аудит 09.10, Б-5) — `user_id` оставлен для совместимости вызовов.
+        text = self.panel_text(camera_id, camera)
         # В панели не осталось тикающих меток («Последний кадр», «Обновлено»):
         # они делали правку темы ежеминутной, а тема от каждой правки всплывала
         # у владельца как новое событие. Перерисовка — только при смене сути.
@@ -640,7 +691,7 @@ class CctvBot:
         try:
             await self.tg.edit_message_text(
                 chat_id=home.chat_id, message_id=message_id, text=text,
-                reply_markup=self.control_markup(camera_id, user_id=user_id, camera=camera),
+                reply_markup=self.control_markup(camera_id, camera=camera),
             )
         except Exception as exc:  # чужая правка или удалённое сообщение не должны ронять ход
             self.log(f"панель {camera_id}: обновить не удалось ({type(exc).__name__})")
@@ -680,8 +731,7 @@ class CctvBot:
         issue = self.state.issue_callback
         result = [Button(self._t(ACTION_TITLES[a]), f"cv:{a}:{issue(camera_id, a, ttl, center_at)}")
                   for a in ("snap", "clip", "stat")]
-        on = user_id is not None and self.state.motion_enabled(user_id, camera_id)
-        result.append(Button(self._t("action.sub_off" if on else "action.sub_on"),
+        result.append(Button(self._t(self._sub_label(camera_id, user_id)),
                              f"cv:sub:{issue(camera_id, 'sub', ttl)}"))
         # Управление держим рядом с просмотром: иначе пауза требует ssh на сервер.
         paused = camera is not None and camera.status in ("paused", "retired")
@@ -694,6 +744,17 @@ class CctvBot:
         result.append(Button(self._t("button.location"), f"cv:loc:{issue(camera_id, 'loc', ttl)}"))
         return result
 
+    def _sub_label(self, camera_id: str, user_id: int | None) -> str:
+        """Подпись кнопки подписки. На общем экране (user_id None) — нейтральная
+        «📩 Мне в личку»: её видят все, а состояние у каждого своё (тост и строка
+        говорят его). В личке — действие для этого человека явным глаголом."""
+        if user_id is None:
+            return "action.dm"
+        on = self.state.motion_enabled(user_id, camera_id)
+        if self.chat_id is None:
+            return "action.sound_off" if on else "action.sound_on"
+        return "action.dm_off" if on else "action.dm_on"
+
     async def setup_markup(self, camera_id: str, config: dict):
         """Кнопки карточки настройки: пароль, детекция людей, удаление из реестра."""
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -704,13 +765,13 @@ class CctvBot:
             [InlineKeyboardButton(
                 self._t("setup.creds_button"),
                 callback_data=f"cv:cand:{self.state.issue_callback(camera_id, 'cand', ttl, config.get('host') or '')}")],
-            [InlineKeyboardButton(
-                self._t("setup.detect_off_button" if person else "setup.detect_on_button"),
-                callback_data=f"cv:detect:{self.state.issue_callback(camera_id, 'detect', ttl, '0' if person else '1')}")],
-            [InlineKeyboardButton(
-                self._t("setup.drop_button"),
-                callback_data=f"cv:drop:{self.state.issue_callback(camera_id, 'drop', ttl)}")],
         ]
+        rows.append([InlineKeyboardButton(
+            self._t("setup.detect_off_button" if person else "setup.detect_on_button"),
+            callback_data=f"cv:detect:{self.state.issue_callback(camera_id, 'detect', ttl, '0' if person else '1')}")])
+        rows.append([InlineKeyboardButton(
+            self._t("setup.drop_button"),
+            callback_data=f"cv:drop:{self.state.issue_callback(camera_id, 'drop', ttl)}")])
         return InlineKeyboardMarkup(rows)
 
     def control_markup(self, camera_id: str, *, user_id: int | None = None, camera=None,
@@ -754,8 +815,28 @@ class CctvBot:
         )
 
     # --- обработка нажатия -------------------------------------------------
-    async def on_callback(self, user_id: int | None, thread: int | None, data: str,
-                          *, chat_id: int | None = None, message_id: int | None = None) -> str:
+    # Входы от человека помнят, кто нажал, на время своего вызова и задач,
+    # запущенных из него (контекст копируется в задачу): пульт без группы
+    # отвечает нажавшему (Б-9). Сброс после вызова — обработчики PTB идут в
+    # одной задаче, и «кто нажал» не должен протечь в следующий.
+    async def on_callback(self, user_id: int | None, thread: int | None, data: str, **kwargs) -> str:
+        with _asking(user_id):
+            return await self._on_callback(user_id, thread, data, **kwargs)
+
+    async def on_text(self, user_id: int | None, thread: int | None, text: str, *args, **kwargs) -> str:
+        with _asking(user_id):
+            return await self._on_text(user_id, thread, text, *args, **kwargs)
+
+    async def on_add(self, user_id: int | None, args: list[str], **kwargs) -> str:
+        with _asking(user_id):
+            return await self._on_add(user_id, args, **kwargs)
+
+    async def on_model(self, user_id: int | None, **kwargs) -> str:
+        with _asking(user_id):
+            return await self._on_model(user_id, **kwargs)
+
+    async def _on_callback(self, user_id: int | None, thread: int | None, data: str,
+                           *, chat_id: int | None = None, message_id: int | None = None) -> str:
         """Вернуть короткий текст для answerCallbackQuery. Побочный эффект — публикация.
 
         `thread` — тема Telegram, где нажали (как пришла в апдейте), `chat_id` —
@@ -855,11 +936,11 @@ class CctvBot:
         reply = origin if on_console else self.routes.reply_to(camera_id, origin)
         if reply is None:
             return self._t("camera.retired")
-        return await self._perform(user_id, camera_id, reply, action, center_at)
+        return await self._perform(user_id, camera_id, reply, action, center_at, message_id=message_id)
 
-    async def on_text(self, user_id: int | None, thread: int | None, text: str,
-                      reply_to_message_id: int | None = None,
-                      message_id: int | None = None, *, chat_id: int | None = None) -> str:
+    async def _on_text(self, user_id: int | None, thread: int | None, text: str,
+                       reply_to_message_id: int | None = None,
+                       message_id: int | None = None, *, chat_id: int | None = None) -> str:
         """Нажатие постоянной кнопки приходит обычным текстом — камеру даёт тема камеры."""
         origin = self.routes.origin(chat_id, thread)
         # Telegram присылает нажатие selective ReplyKeyboard как reply на то
@@ -895,7 +976,8 @@ class CctvBot:
                     # индексируется в личный RAG, и лишней секунды ему хватит.
                     await self._forget_message(message_id, origin)
                 return await self._apply_input(user_id, pending[0], pending[1], text or "")
-        return self._t(UNKNOWN_KEY if self.routes.forum else "hint.unknown_flat")
+        return self._t({"camera": UNKNOWN_KEY, "location": "hint.unknown_location"}.get(
+            self.routes.preset, "hint.unknown_flat"))
 
     async def on_frame_reply(self, user_id: int | None, thread: int | None,
                              replied_message_id: int, *, chat_id: int | None = None) -> str:
@@ -907,7 +989,7 @@ class CctvBot:
         # Буфер записи короткий (минуты), связь «фото → момент» живёт час: оба
         # отказа обязаны говорить, что делать дальше, а не загадкой из кода.
         if found is None:
-            return self._t("frame.unknown" if self.routes.forum else "frame.unknown_flat")
+            return self._t("frame.unknown" if self.routes.preset == "camera" else "frame.unknown_flat")
         frame, where = found
         if frame.expired:
             return self._t("frame.expired")
@@ -918,17 +1000,16 @@ class CctvBot:
         return await self._request_media(frame.camera_id, where, "clip", frame.center_at)
 
     async def _perform(self, user_id: int | None, camera_id: str, dest: Dest,
-                       action: str, center_at: str | None) -> str:
+                       action: str, center_at: str | None, *, message_id: int | None = None) -> str:
         """Одно действие — один путь, независимо от того, откуда пришло нажатие.
 
-        `dest` — куда вернуть результат (кадр, клип, просьбу о вводе).
+        `dest` — куда вернуть результат (кадр, клип, просьбу о вводе);
+        `message_id` — нажатое сообщение (карточка настройки правится на месте).
         """
         if action == "sub":
-            enabled = self.state.toggle_motion(user_id, camera_id)
-            await self.refresh_panel(camera_id, user_id=user_id)
-            return self._t("notify.on" if enabled else "notify.off")
+            return await self._toggle_subscription(user_id, camera_id)
         if action == "stat":
-            return await self._status(camera_id, user_id)
+            return await self._status(camera_id, dest)
         if action in ("pause", "resume", "retire", "rename"):
             return await self._control(user_id, camera_id, dest, action)
         if action == "setup":
@@ -936,7 +1017,7 @@ class CctvBot:
         if action == "cand":
             return await self._ask_credentials(user_id, center_at or "", camera_id, dest)
         if action == "detect":
-            return await self._toggle_detection(camera_id, center_at == "1")
+            return await self._toggle_detection(camera_id, center_at == "1", dest, message_id)
         if action == "drop":
             self.state.expect_input(user_id, camera_id, "drop", INPUT_TTL_SEC)
             return await self._ask_for_text(dest, self._t(INPUT_PROMPTS["drop"]))
@@ -947,6 +1028,20 @@ class CctvBot:
         return await self._request_media(
             camera_id, dest, "clip" if action == "clip" else "snapshot", center_at
         )
+
+    async def _toggle_subscription(self, user_id: int | None, camera_id: str) -> str:
+        """«📩 Мне в личку»: подписка нажавшего на камеру. При группе — копия
+        события в личку со звуком, без группы — звук своей ленты в личке.
+        Тост — про нажавшего; общая панель и карты перерисовываются по сути."""
+        if user_id is None:
+            return self._t("no_access")
+        enabled = self.state.toggle_motion(user_id, camera_id)
+        await self.refresh_panel(camera_id)
+        title = self.routes.title(camera_id)
+        if self.chat_id is None:
+            await self.refresh_console()  # карты в личках несут метку «🔕» своего хозяина
+            return self._t("notify.sound_on" if enabled else "notify.sound_off", title=title)
+        return self._t("notify.dm_on" if enabled else "notify.dm_off", title=title)
 
     async def _ask_for_text(self, dest: Dest | None, text: str, *, post: bool = True) -> str:
         """Просьба прислать текст обязана остаться в чате, а не мигнуть тостом.
@@ -1224,6 +1319,15 @@ class CctvBot:
             return self._t("creds.need_both")
         try:
             result = await asyncio.to_thread(self.bridge.probe, host, parts[0], parts[1], detect)
+            if (camera_id and not result.get("ok") and "://" not in host
+                    and result.get("error_key") == "discovery.no_stream"):
+                # Камера заведена адресом потока (вне поиска): по IP её поток не
+                # найти, и смена пароля с карточки отказывала. Проверяем пароль на
+                # записанном адресе — пути потоков в реестре те же (стенд 09.10).
+                stored = await self._stored_streams(camera_id)
+                if stored:
+                    result = await asyncio.to_thread(self.bridge.probe, stored[0], parts[0],
+                                                     parts[1], stored[1])
         except BridgeError as exc:
             return self._error(exc.code)
         finally:
@@ -1248,6 +1352,22 @@ class CctvBot:
             return self._t("creds.updated", detected=self.detected_text(summary))
         self.state.expect_input(user_id, CONSOLE_CAMERA, f"name|{token}|{host}", INPUT_TTL_SEC)
         return self._t("creds.ask_name", detected=self.detected_text(summary))
+
+    async def _stored_streams(self, camera_id: str) -> tuple[str, str] | None:
+        """Адреса потоков камеры из реестра без учётки: (основной, детектора или '')."""
+        try:
+            config = await asyncio.to_thread(self.bridge.camera_config, camera_id)
+        except BridgeError:
+            return None
+
+        def bare(url) -> str:
+            return re.sub(r"://[^/@]*@", "://", str(url or ""))
+
+        # Схему и хост проверяет мост (проба отвергает не-RTSP и чужой хост детектора).
+        main, detect = bare(config.get("rtsp_url")), bare(config.get("detect_rtsp_url"))
+        if "://" not in main:
+            return None
+        return main, "" if detect == main or "://" not in detect else detect
 
     def detected_text(self, summary: dict) -> str:
         """Что определилось у камеры. URL — с затёртым паролем, так их даёт мост."""
@@ -1427,6 +1547,12 @@ class CctvBot:
             return self._error(exc.code)
         if not config:
             return self._t("setup.no_record")
+        await self._send(dest, self.setup_text(camera_id, config),
+                         reply_markup=await self.setup_markup(camera_id, config))
+        # Тема камеры — «в теме камеры»; карта, личка, общая тема — карточка ниже, здесь же.
+        return self._t("setup.card_sent" if dest == self.routes.camera_topic(camera_id) else "setup.card_here")
+
+    def setup_text(self, camera_id: str, config: dict) -> str:
         lines = [self._t("setup.title", title=config.get("title") or camera_id),
                  f"camera_id: {camera_id}",
                  self._t("setup.address", value=config.get("host") or "—"),
@@ -1437,11 +1563,11 @@ class CctvBot:
                          value=config.get("snapshot_url") or self._t("setup.no_snapshot")),
                  self._t("setup.person", state=self._t(
                      "setup.person_on" if config.get("person_detection") else "setup.person_off"))]
-        await self._send(dest, "\n".join(lines), reply_markup=await self.setup_markup(camera_id, config))
-        # Тема камеры — «в теме камеры»; карта, личка, общая тема — карточка ниже, здесь же.
-        return self._t("setup.card_sent" if dest == self.routes.camera_topic(camera_id) else "setup.card_here")
+        return "\n".join(lines)
 
-    async def _toggle_detection(self, camera_id: str, enable: bool) -> str:
+    async def _toggle_detection(self, camera_id: str, enable: bool, dest: Dest | None = None,
+                                message_id: int | None = None) -> str:
+        """Включить или выключить детекцию людей и перерисовать карточку настройки на месте."""
         try:
             applied = await asyncio.to_thread(self.bridge.update_camera, camera_id,
                                               person_detection=enable)
@@ -1451,6 +1577,20 @@ class CctvBot:
             return self._t("registry.not_saved",
                            error=self._refusal(applied, "registry.refused"))
         asyncio.create_task(self._sync_after_restart())
+        if dest is not None and message_id is not None:
+            # Без перерисовки на карточке оставалась прежняя кнопка, и повторное
+            # нажатие повторяло то же действие (аудит 09.10, Б-12).
+            try:
+                config = await asyncio.to_thread(self.bridge.camera_config, camera_id)
+            except BridgeError:
+                config = {}
+            config = dict(config or {"title": self.routes.title(camera_id)}, person_detection=enable)
+            try:
+                await self.tg.edit_message_text(chat_id=dest.chat_id, message_id=message_id,
+                                                text=self.setup_text(camera_id, config),
+                                                reply_markup=await self.setup_markup(camera_id, config))
+            except Exception as exc:
+                self.log(f"карточка настройки {camera_id}: правка не прошла ({type(exc).__name__})")
         return self._t("detect.enabled" if enable else "detect.disabled")
 
     async def _delete_camera(self, camera_id: str) -> str:
@@ -1485,8 +1625,9 @@ class CctvBot:
                 self.log(f"сверка реестра после перезапуска отложена ({type(exc).__name__}: {exc})")
                 await asyncio.sleep(5 * (attempt + 1))
 
-    async def _status(self, camera_id: str, user_id: int | None = None) -> str:
-        """Статус отвечает содержимым панели: «обновлена» ничего не сообщало о камере."""
+    async def _status(self, camera_id: str, viewer: Dest | None = None) -> str:
+        """Статус отвечает содержимым панели: «обновлена» ничего не сообщало о камере.
+        Строка подписки — для места, где нажали (в личке — про этого человека)."""
         try:
             cameras = await asyncio.to_thread(self.bridge.cameras)
         except BridgeError as exc:
@@ -1494,8 +1635,8 @@ class CctvBot:
         camera = next((c for c in cameras if c.camera_id == camera_id), None)
         if camera is None:
             return self._t(ERROR_TEXT["not_found"])
-        await self.refresh_panel(camera_id, user_id=user_id)
-        return self.panel_text(camera_id, camera, user_id=user_id)
+        await self.refresh_panel(camera_id)
+        return self.panel_text(camera_id, camera, viewer=viewer)
 
     async def _request_media(self, camera_id: str, dest: Dest, kind: str,
                              center_at: str | None) -> str:
@@ -1532,15 +1673,23 @@ class CctvBot:
         elif event.type == "media.failed":
             await self._on_media_failed(event)
 
+    def _named(self, camera_id: str, dest: Dest | None) -> bool:
+        """Нужно ли имя камеры в тексте: везде, кроме её собственной темы (имя даёт
+        тема). Личная копия события из темы камеры — тоже с именем."""
+        if not self.routes.dedicated(camera_id):
+            return True
+        return dest is not None and dest != self.routes.camera_topic(camera_id)
+
     def _caption(self, camera_id: str, what: str, stamp: str | None, *, merged: int = 0,
-                 last_at: str | None = None, extra: str = "") -> str:
+                 last_at: str | None = None, extra: str = "", dest: Dest | None = None) -> str:
         """Подпись поста о камере: что и когда, «+N за минуту», хэштеги камеры и локации.
 
-        В своей теме камеры имя не нужно — его даёт тема; в общей теме локации и
-        в плоском чате подпись начинается с имени камеры, иначе ленту не различить.
+        В своей теме камеры имя не нужно — его даёт тема; в общей теме локации,
+        в плоском чате и в личке подпись начинается с имени камеры, иначе ленту
+        не различить.
         """
         head = f"{what}: {self._time(stamp)}"
-        if not self.routes.dedicated(camera_id):
+        if self._named(camera_id, dest):
             head = self._t("event.shared", title=self.routes.title(camera_id), event=head)
         lines = [head]
         if merged:
@@ -1580,16 +1729,16 @@ class CctvBot:
         is_person = "person_detector" in (event.source or "")
         what = self._t("event.person" if is_person else "event.motion")
         stamp = event.occurred_at or utcnow()
-        # Подписка управляет звуком, а не самим фактом записи в чат.
+        # Лента (группа) — тихо; личка подписчика — со звуком (silent_for).
         silent = lambda dest: self.routes.silent_for(event.camera_id, dest)
         if event.media is None:
             for dest in dests:
                 await self._send(dest, self._caption(event.camera_id, what, stamp,
-                                                     extra=self._t("event.no_frame")),
+                                                     extra=self._t("event.no_frame"), dest=dest),
                                  disable_notification=silent(dest))
             return
         await self._publish(event, dests, "snapshot",
-                            lambda _dest: self._caption(event.camera_id, what, stamp),
+                            lambda dest: self._caption(event.camera_id, what, stamp, dest=dest),
                             silent=silent, person=is_person)
 
     async def _on_media_ready(self, event: Event) -> None:
@@ -1601,6 +1750,8 @@ class CctvBot:
                 self.log(f"media.ready {event.request_id}: запрос неизвестен или уже отдан")
                 return
             dests = [pending[2]]
+            silent = lambda _dest: False  # заказал человек — ждёт ответа
+            reply_to = lambda _dest: None
         else:
             # Клип движения бот не заказывал: его request_id — это event_id самого
             # движения, и строгая проверка отправляла каждый такой клип в мусор.
@@ -1608,11 +1759,20 @@ class CctvBot:
             if not dests:
                 self.log(f"media.ready по неизвестной камере {event.camera_id}: пропуск")
                 return
+            # Клип — ответом на пост своего события в каждом месте, со звуком
+            # места; клип события, вклеенного в чужой пост правкой, — тихо: звонил
+            # бы на каждое движение склеенной минуты (аудит 09.10, Б-6).
+            posts = {dest: self.state.event_message(event.source_event_id or "", dest.chat_id,
+                                                    dest.thread_id) for dest in dests}
+            silent = lambda dest: (posts[dest] is not None and not posts[dest][1]
+                                   or self.routes.silent_for(event.camera_id, dest))
+            reply_to = lambda dest: posts[dest][0] if posts[dest] is not None else None
         kind = event.kind or "snapshot"
         stamp = event.captured_at or event.occurred_at or utcnow()
         what = self._t("media.frame" if kind == "snapshot" else "media.clip")
-        await self._publish(event, dests, kind, lambda _dest: self._caption(event.camera_id, what, stamp),
-                            silent=lambda _dest: False)
+        await self._publish(event, dests, kind,
+                            lambda dest: self._caption(event.camera_id, what, stamp, dest=dest),
+                            silent=silent, reply_to=reply_to)
 
     async def _on_media_failed(self, event: Event) -> None:
         """Отказ Bridge обязан вернуться туда, откуда просили: иначе кнопка выглядит сломанной."""
@@ -1622,7 +1782,8 @@ class CctvBot:
             if pending is not None:
                 dests = [pending[2]]
         if not dests:
-            dests = self.routes.route(event.camera_id)
+            # Отказ клипа движения — только в ленту: в личку идут события, а не сбои.
+            dests = self.routes.feed(event.camera_id)
             if not dests:
                 self.log(f"media.failed по неизвестной камере {event.camera_id}: пропуск")
                 return
@@ -1632,10 +1793,11 @@ class CctvBot:
             await self._send(dest, self._t("media.failed", what=what, reason=reason))
 
     async def _publish(self, event: Event, dests: list[Dest], kind: str, caption,
-                       *, silent, person: bool | None = None) -> None:
+                       *, silent, person: bool | None = None, reply_to=lambda _dest: None) -> None:
         """Скачать медиа один раз и довезти во все места маршрута.
 
-        `caption` и `silent` — функции места (звук в личке — свой у каждого).
+        `caption`, `silent` и `reply_to` — функции места (звук в личке — свой у
+        каждого, клип движения — ответом на пост события в этом месте).
         `person` задан у событий движения: они склеиваются за EVENT_MERGE_SEC.
         Отметка дедупликации снимается, только если не доехало никуда: повтор
         моста иначе продублировал бы событие у тех, кому оно уже пришло.
@@ -1654,11 +1816,13 @@ class CctvBot:
         try:
             delivered = 0
             for dest in dests:
-                if person is not None and await self._merge_motion(event, dest, media.path, person):
+                if person is not None and await self._merge_motion(event, dest, media.path, person,
+                                                                   silent=silent(dest)):
                     delivered += 1
                     continue
                 if await self._send_media_with_retry(event, dest, kind, caption(dest), media.path,
-                                                     silent=silent(dest), person=person):
+                                                     silent=silent(dest), person=person,
+                                                     reply_to=reply_to(dest)):
                     delivered += 1
             if not delivered:
                 self.state.forget_event(event.event_id)
@@ -1669,19 +1833,24 @@ class CctvBot:
             except OSError:
                 pass
 
-    async def _merge_motion(self, event: Event, dest: Dest, path: str, person: bool) -> bool:
+    async def _merge_motion(self, event: Event, dest: Dest, path: str, person: bool,
+                            *, silent: bool = True) -> bool:
         """Вклеить событие в недавний пост этой камеры здесь же: свежий кадр и «+N».
 
         True — вклеено. Пост удалили руками или Telegram отказал — False, и
         событие уходит новым постом: склейка не вправе терять события.
+        Правка в Telegram беззвучна: человек после «движения» в месте со звуком
+        уходит новым постом, иначе подписчик не услышал бы главного (Б-7).
         """
         post = self.routes.recent_post(event.camera_id, dest, self.merge_sec)
         if post is None:
             return False
+        if person and not post.person and not silent:
+            return False
         captured = event.captured_at or event.occurred_at or utcnow()
         what = self._t("event.person" if person or post.person else "event.motion")
         caption = self._caption(event.camera_id, what, post.first_at, merged=post.merged + 1,
-                                last_at=event.occurred_at or captured)
+                                last_at=event.occurred_at or captured, dest=dest)
         from telegram import InputMediaPhoto
 
         try:
@@ -1698,6 +1867,8 @@ class CctvBot:
             self.routes.forget_post(event.camera_id, dest)
             return False
         self.routes.merge_post(event.camera_id, dest, person)
+        self.state.remember_event_message(event.event_id, dest.chat_id, dest.thread_id,
+                                          post.message_id, fresh=False)
         # Ответ на склеенный пост — клип вокруг его свежего кадра.
         self.routes.remember_frame(post.message_id, event.camera_id, dest, captured,
                                    self.cfg.callback_ttl_sec)
@@ -1705,7 +1876,8 @@ class CctvBot:
 
     async def _send_media_with_retry(self, event: Event, dest: Dest, kind: str,
                                      caption: str, path: str, *, silent: bool,
-                                     person: bool | None = None) -> bool:
+                                     person: bool | None = None,
+                                     reply_to: int | None = None) -> bool:
         """Довезти медиа до места или честно сказать, что событие потеряно. True — доехало.
 
         Чат Telegram — единственное место, где событие хранится: диск моста
@@ -1717,6 +1889,9 @@ class CctvBot:
         # дешевле повторной заливки, но повторять их на каждом ретрае незачем.
         meta: dict | None = None
         thumb_path: str | None = None
+        # Пост события удалили — клип всё равно доезжает, просто без ответа.
+        reply = ({"reply_to_message_id": reply_to, "allow_sending_without_reply": True}
+                 if reply_to is not None else {})
         try:
             for attempt in range(DELIVERY_ATTEMPTS):
                 try:
@@ -1729,7 +1904,7 @@ class CctvBot:
                                 await self.tg.send_video(
                                     **dest.kw(),
                                     video=handle, caption=caption, disable_notification=silent,
-                                    supports_streaming=True, thumbnail=thumb, **meta,
+                                    supports_streaming=True, thumbnail=thumb, **meta, **reply,
                                     # Имя задаёт mime загрузки: без .mp4 Bot API кладёт
                                     # документ, и Android рисует файл вместо плеера.
                                     filename=CLIP_FILENAME,
@@ -1740,7 +1915,7 @@ class CctvBot:
                             captured = event.captured_at or event.occurred_at
                             published = await self.tg.send_photo(
                                 **dest.kw(),
-                                photo=handle, caption=caption, disable_notification=silent,
+                                photo=handle, caption=caption, disable_notification=silent, **reply,
                                 read_timeout=self.cfg.tg_media_timeout_sec,
                                 write_timeout=self.cfg.tg_media_timeout_sec,
                                 reply_markup=self.frame_markup(event.camera_id, captured),
@@ -1754,9 +1929,17 @@ class CctvBot:
                             if person is not None:
                                 self.routes.remember_post(event.camera_id, dest, message_id,
                                                           event.occurred_at or utcnow(), person)
+                                self.state.remember_event_message(event.event_id, dest.chat_id,
+                                                                  dest.thread_id, message_id, fresh=True)
                     return True
                 except Exception as exc:  # сеть, лимит Telegram, временная ошибка API
                     last = exc
+                    if dest.private and _unreachable(exc):
+                        # Личка закрыта (бот заблокирован, «Старт» не нажат): повтор
+                        # и сообщение о потере туда же бессмысленны, лента не ждёт.
+                        self.log(f"доставка {kind} {event.camera_id}: личка {dest.chat_id} "
+                                 f"недоступна ({type(exc).__name__})")
+                        return False
                     self.log(f"доставка {kind} {event.camera_id}: попытка "
                              f"{attempt + 1}/{DELIVERY_ATTEMPTS} не удалась ({type(exc).__name__})")
                     if attempt + 1 < DELIVERY_ATTEMPTS:
@@ -1823,10 +2006,10 @@ class CctvBot:
             key = HEALTH_TEXT.get(state)
             if key is None:
                 continue  # пауза и снятие объявляются в момент нажатия кнопки
-            text = self._t(key)
-            if not self.routes.dedicated(camera.camera_id):
-                text = self._t("event.shared", title=camera.title, event=text)
             for dest in dests:
+                text = self._t(key)
+                if self._named(camera.camera_id, dest):
+                    text = self._t("event.shared", title=camera.title, event=text)
                 try:
                     await self._send(dest, f"{text}\n{self._time(utcnow())}")
                 except Exception as exc:
@@ -1931,8 +2114,7 @@ class CctvBot:
                 lines.append(self._t("map.section", location=location or self._t("route.no_location")))
             for camera in group:
                 state = self.health_state(camera)
-                quiet = (" 🔕" if viewer is not None and camera.status != "retired"
-                         and self.routes.silent_for(camera.camera_id, viewer) else "")
+                quiet = self._map_mark(camera, viewer)
                 lines.append(f"{CONSOLE_STATE_MARK.get(state, '⚪️')} {camera.title}{quiet} — "
                              f"{self._t(CONSOLE_STATE_TEXT[state]) if state in CONSOLE_STATE_TEXT else state}")
                 if camera.last_motion_at:
@@ -1950,6 +2132,17 @@ class CctvBot:
             lines.append(self._t("update.available", version=available))
         lines.append(self._t("console.updated", time=self._time(utcnow())))
         return "\n".join(lines)[:4000]
+
+    def _map_mark(self, camera, viewer: Dest | None) -> str:
+        """Метка подписки на карте — только в личке, про её хозяина: без группы
+        «🔕» — его лента тихая, при группе «📩» — копии событий идут ему в личку.
+        Общая карта в группе меток не несёт: состояние у каждого своё."""
+        if viewer is None or not viewer.private or camera.status == "retired":
+            return ""
+        on = viewer.chat_id in self._subscribers(camera.camera_id)
+        if self.chat_id is None:
+            return "" if on else " 🔕"
+        return " 📩" if on else ""
 
     def map_markup(self, cameras, page: str | None = None):
         """Кнопки карты: камеры (нажатие — карточка в этом же сообщении), а при
@@ -2116,17 +2309,32 @@ class CctvBot:
 
     async def _refresh_home(self, place: Dest, registry, *, force: bool = False) -> None:
         screen = self.routes.home_screen(place)
+        adopted = False
+        retired_key = RETIRED_HOME_KEY.format(chat=place.chat_id, thread=place.thread_id or 0)
+        retired = self.state.get_service(retired_key)
+        if screen is None and retired is not None:
+            # Режим вернулся в это место (/mode туда-обратно): прежняя карта снова карта.
+            self.routes.remember_screen(place, int(retired), "map", home=True)
+            screen = self.routes.home_screen(place)
+            adopted = True
+        if retired is not None:
+            self.state.delete_service(retired_key)
         if screen is None and place == self.routes.console() and self.routes.forum:
             saved = self.state.get_service(CONSOLE_PANEL_KEY)
             if saved is not None:
-                # Пульт до 0.3.0: его закреплённое сообщение становится картой.
+                # Пульт до 0.3.0 или после возврата в темы (/mode): его прежнее
+                # сообщение снова становится картой.
                 self.routes.remember_screen(place, int(saved), "map", home=True)
                 screen = self.routes.home_screen(place)
+                adopted = True
         if screen is not None:
             view = screen.view
             if view != "map" and self.state.now() - screen.shown_at > HOME_VIEW_TTL_SEC:
                 view = "map"
             if await self._redraw(screen, registry, force=force or view.startswith("map"), view=view):
+                if adopted:
+                    # Уходя из тем, карта пульта открепляется (_retire_screens) — вернуть закреп.
+                    await self._pin(place, screen.message_id)
                 return
             # Сообщение могли удалить руками — тогда заводим новое.
             self.log(f"карта {place.chat_id}: правка не прошла, пересоздаю")
@@ -2138,26 +2346,83 @@ class CctvBot:
         self.state.remember_screen_text(place.chat_id, message_id, text)
         if self.routes.forum and place == self.routes.console():
             self.state.set_service(CONSOLE_PANEL_KEY, str(message_id))
+        await self._pin(place, message_id)
+
+    async def _pin(self, place: Dest, message_id: int) -> None:
         try:
             await self.tg.pin_chat_message(chat_id=place.chat_id, message_id=message_id,
                                            disable_notification=True)
         except Exception as exc:
             self.log(f"карта: закрепить не удалось ({type(exc).__name__})")
 
-    async def _retire_screens(self) -> None:
-        """После смены пресета карта переезжает: прежние карты вне новых мест
-        честно говорят об этом и больше не перерисовываются."""
+    async def _retire_screens(self, reason: str = "mode") -> None:
+        """После смены пресета или подключения группы карта переезжает: прежние
+        карты вне новых мест честно говорят, куда и почему, больше не
+        перерисовываются и открепляются — иначе в закрепе висело «переехала»
+        (аудит 09.10, Б-10). `reason` — mode (/mode) или group (подключили группу)."""
         places = set(self.routes.map_places())
+        text = self._t("map.moved_group" if reason == "group" else "map.moved")
+        unpin = getattr(self.tg, "unpin_chat_message", None)
         for screen in self.state.screens():
             dest = self.routes.screen_place(screen)
             if not screen.home or dest in places:
                 continue
             self.state.forget_screen(screen.chat_id, screen.message_id)
+            self.state.set_service(RETIRED_HOME_KEY.format(chat=dest.chat_id, thread=dest.thread_id or 0),
+                                   str(screen.message_id))
             try:
                 await self.tg.edit_message_text(chat_id=dest.chat_id, message_id=screen.message_id,
-                                                text=self._t("map.moved"), reply_markup=None)
+                                                text=text, reply_markup=None)
             except Exception as exc:
                 self.log(f"старая карта {dest.chat_id}: правка не прошла ({type(exc).__name__})")
+            if unpin is None:
+                continue
+            try:
+                await unpin(chat_id=dest.chat_id, message_id=screen.message_id)
+            except Exception as exc:
+                self.log(f"старая карта {dest.chat_id}: открепить не удалось ({type(exc).__name__})")
+
+    async def unpin_stale_moved(self) -> None:
+        """Один раз после обновления с 0.3.0: снять закреп «Карта камер переехала…».
+
+        0.3.0 при /mode и подключении группы правил прежнюю карту в «переехала», но
+        оставлял её закреплённой и забывал её id (аудит 09.10, Б-10): обновлённый бот
+        этих сообщений не знает, и в закрепе группы (General) и лички висело
+        «переехала» поверх живой карты. Telegram отдаёт последнее закреплённое
+        (getChat): наше «переехала» — открепить и смотреть следующее. Чужие
+        закрепы и живые карты не трогаются. Отметка в `service` — после того, как
+        все чаты проверены без сбоя связи (сбой — повтор при следующем старте)."""
+        if self.state.get_service(STALE_MOVED_KEY) is not None:
+            return
+        get_chat = getattr(self.tg, "get_chat", None)
+        unpin = getattr(self.tg, "unpin_chat_message", None)
+        if get_chat is None or unpin is None:
+            return
+        texts = {i18n.t(key, lang).strip() for key in ("map.moved", "map.moved_group")
+                 for lang in i18n.available()} - {""}
+        try:
+            me = getattr(await self.tg.get_me(), "id", None)
+        except Exception as exc:
+            self.log(f"закрепы «переехала»: getMe отложен ({type(exc).__name__})")
+            return
+        chats = ([self.chat_id] if self.chat_id is not None else []) + self._recipients()
+        done = True
+        for chat in dict.fromkeys(chats):
+            for _ in range(STALE_MOVED_MAX):
+                try:
+                    pinned = getattr(await get_chat(chat_id=chat), "pinned_message", None)
+                    author = getattr(getattr(pinned, "from_user", None), "id", None)
+                    if pinned is None or author != me or (getattr(pinned, "text", "") or "").strip() not in texts:
+                        break
+                    await unpin(chat_id=chat, message_id=pinned.message_id)
+                    self.log(f"закреп «переехала» от 0.3.0 снят: {chat}/{pinned.message_id}")
+                except Exception as exc:
+                    if _transient(exc):
+                        done = False
+                    self.log(f"закрепы «переехала» {chat}: {type(exc).__name__}")
+                    break
+        if done:
+            self.state.set_service(STALE_MOVED_KEY, "done")
 
     # --- мастер первого запуска ------------------------------------------------
     def needs_owner(self) -> bool:
@@ -2402,7 +2667,7 @@ class CctvBot:
         fresh = self.routes.home_screen(Dest(chat_id)) is None
         await self.sync_registry()
         await self.refresh_console()
-        await self._retire_screens()
+        await self._retire_screens("group")
         if fresh:
             self.log(f"мастер: группа {chat_id} — плоский режим")
             return self._t("wizard.group_ready_flat")
@@ -2677,8 +2942,8 @@ class CctvBot:
         return (not self.routes.forum and chat_id is not None
                 and self.routes.origin(chat_id, None) == self.routes.console())
 
-    async def on_add(self, user_id: int | None, args: list[str], *,
-                     chat_id: int | None = None) -> str:
+    async def _on_add(self, user_id: int | None, args: list[str], *,
+                      chat_id: int | None = None) -> str:
         """/add — поиск камер; /add <адрес> — камера вне поиска (IP или адрес потока)."""
         if not self.allowed(user_id):
             return self._t("no_access")
@@ -2712,7 +2977,7 @@ class CctvBot:
     # --- модель детектора людей ------------------------------------------
     # Бот только показывает и заказывает: перезагрузку детекторов, проверку файла
     # и откат делает движок (engine/model_switch.py), бот ждёт исход и сообщает.
-    async def on_model(self, user_id: int | None, *, chat_id: int | None = None) -> str:
+    async def _on_model(self, user_id: int | None, *, chat_id: int | None = None) -> str:
         """/model — меню модели детектора на пульте."""
         if not self.allowed(user_id):
             return self._t("no_access")
@@ -3100,6 +3365,7 @@ class CctvBot:
         current = self.routes.preset
         lines = [self._t("mode.current", preset=self._preset_name(current)), ""]
         lines += [self._t(f"mode.about.{preset}") for preset in PRESETS]
+        lines += ["", self._t("mode.dm_note")]
         if self.chat_id is None:
             lines += ["", self._t("mode.no_group")]
         rows = [[InlineKeyboardButton(
@@ -3144,13 +3410,20 @@ class CctvBot:
             self.routes.set_preset(previous)
             return self._t("mode.failed", preset=self._preset_name(preset))
         self.log(f"режим маршрутов: {previous} → {preset}")
-        answer = self._t("mode.changed", preset=self._preset_name(preset))
+        answer = self._t("mode.changed", preset=self._preset_name(preset), where=self.mode_where())
         if preset == "location" and not any(self.routes.location(c.camera_id)
                                             for c in self.state.active_cameras()):
             answer += "\n" + self._t("mode.location_hint")
         if not self.state.active_cameras():
             answer += "\n" + self._t("mode.add_first")
         return answer
+
+    def mode_where(self) -> str:
+        """Куда сейчас идут события — одной фразой для /mode (аудит 09.10, Б-11)."""
+        preset = self.routes.preset
+        if preset == "flat":
+            preset = "flat_group" if self.chat_id is not None else "flat_private"
+        return self._t(f"mode.where.{preset}")
 
     async def _apply_location(self, camera_id: str, text: str) -> str:
         """Тег локации с карточки: секция на карте, тема в пресете «тема на локацию»."""
@@ -3250,10 +3523,22 @@ class CctvBot:
         cameras = self.state.active_cameras()
         if not cameras:
             return self._t("menu.empty")
-        lines = [self._t("menu.header" if self.routes.forum else "menu.header_flat")]
+        lines = [self._t("menu.header" if self.routes.preset == "camera" else "menu.header_flat")]
         lines += [f"• {c.title} ({c.camera_id})" for c in cameras]
-        lines.append(self._t("menu.footer"))
+        lines.append(self._t({"camera": "menu.footer", "location": "menu.footer_location"}.get(
+            self.routes.preset, "menu.footer_flat")))
         return "\n".join(lines)
+
+    def menu_keyboard(self, chat_id: int | None):
+        """Клавиатура для /menu вне темы камеры. Она одна на чат и действует только
+        в теме камеры (аудит 09.10, Б-4): в личке и в группе без тем камер ей
+        работать негде — снять прежнюю; в группе с темами камер — не трогать,
+        там она работает."""
+        from telegram import ReplyKeyboardRemove
+
+        if chat_id is not None and chat_id == self.chat_id and self.state.active_topics():
+            return None
+        return ReplyKeyboardRemove(selective=True)
 
     async def sync_registry(self) -> None:
         """Свести маршруты с реестром Bridge: новые камеры заводим, снятые закрываем."""

@@ -271,7 +271,7 @@ class FlowTest(unittest.IsolatedAsyncioTestCase):
         подписка — состояние пользователя, живость приходит из реестра Bridge."""
         await self.bot.on_event(self.registered())
         self.assertIn("🟢 детектор смотрит поток", self.panel_texts()[-1])
-        self.assertIn("🔕 выключены", self.panel_texts()[-1])
+        self.assertIn("📩 В личку: никому", self.panel_texts()[-1])
 
         self.motion_health = {"state": "stalled", "reason": "heartbeat_stale",
                               "last_motion_at": "2026-08-24T10:00:00Z"}
@@ -311,7 +311,7 @@ class FlowTest(unittest.IsolatedAsyncioTestCase):
         data = self.tg.of("send_message")[0]["reply_markup"].inline_keyboard[1][1].callback_data
         await self.bot.on_callback(OWNER, 101, data)
         self.assertEqual(before, len(self.tg.of("send_message")), "подписка снова пишет в ленту")
-        self.assertIn("🔔 включены", self.panel_texts()[-1])
+        self.assertIn("📩 В личку получают: 1 чел.", self.panel_texts()[-1])
 
     async def test_status_button_answers_with_live_state(self):
         """Регрессия 29.08.2026: «Статус» отвечал «Панель обновлена.» — и это
@@ -321,7 +321,7 @@ class FlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Панель обновлена", answer)
         self.assertIn("🟢 онлайн", answer)
         self.assertIn("🟢 детектор смотрит поток", answer)
-        self.assertIn("🔕 выключены", answer)
+        self.assertIn("📩 В личку: никому", answer)
         self.assertEqual([], self.media_requests, "статус не заказывает медиа")
 
     async def test_status_stays_informative_when_panel_is_unchanged(self):

@@ -6,7 +6,7 @@
 #   dozorcam update [-y] [ВЕРСИЯ] | backup [ФАЙЛ] | restore [-y] ФАЙЛ
 #   dozorcam uninstall [-y] [--volumes] [--image]
 #
-# Образ в .env закреплён по digest (CCTV_IMAGE_TAG=0.3.0@sha256:…): pull по тегу
+# Образ в .env закреплён по digest (CCTV_IMAGE_TAG=0.3.1@sha256:…): pull по тегу
 # не перепрыгнет молча через версии. update берёт версию из GitHub Releases,
 # показывает CHANGELOG между версиями и при провале healthcheck возвращает прежние
 # .env и compose.yml (прежний образ остаётся локально — откат без сети).
@@ -436,6 +436,8 @@ cmd_uninstall() {
   project=$(project_name)
   ref=$(image_ref)
   dc down --remove-orphans
+  # Том буфера на диске — только кольцо последних минут видео, не состояние.
+  dock volume rm "${project}_engine-buffer" >/dev/null 2>&1 || true
   if [ "$volumes" = 1 ] || ask "Also delete the state (camera list, camera passwords, owner)? This cannot be undone." \
                                "Удалить и состояние (список камер, пароли камер, владелец)? Это необратимо."; then
     for volume in $VOLUMES; do

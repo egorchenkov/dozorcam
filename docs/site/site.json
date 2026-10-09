@@ -1,6 +1,6 @@
 {
-  "_comment": "Values shared by the website (docs/site) and both READMEs. Edit here, then run scripts/site-sync.py. The version is not stored here: it comes from cctv/__init__.py.",
-  "platform.en": "Artel",
-  "platform.ru": "Артель",
-  "platform.ru_in": "Артели"
+  "_comment": "Values shared by the website (docs/site) and both READMEs. Edit here, then run scripts/site-sync.py. The version is not stored here: it comes from cctv/__init__.py. The platform has no name yet: platform.* hold a description; a name later is one edit here (en, ru nominative, ru prepositional after «на»).",
+  "platform.en": "a general-purpose platform for building applications and AI agents through Telegram bots",
+  "platform.ru": "универсальная платформа разработки приложений и ИИ-агентов через Telegram-ботов",
+  "platform.ru_in": "универсальной платформе разработки приложений и ИИ-агентов через Telegram-ботов"
 }

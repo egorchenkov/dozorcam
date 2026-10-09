@@ -1,6 +1,83 @@
 # Changelog
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [SemVer](https://semver.org/).
+Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
+
+## [0.3.1] — 2026-10-09
+
+Stabilization of 0.3.0 after the first day in production: private chats, frames in topics and
+the notification button. Hardware sizing recounted from measurements — less RAM for 3–8
+cameras — and the video buffer can live on an SSD when RAM is short.
+
+### Changed
+- Events go to the feed **and** to private chats at once: the group (camera topic, location
+  topic or the group itself) and a copy in the private chat of everyone allowed who pressed
+  "📩 To my DM" on the camera card — in every mode. The group feed is silent, the private copy
+  rings. Without a group the private chat is the feed and the button switches its sound.
+  Before, a group bound in the flat mode took the feed away from private chats.
+- The "🔔/🔕 Motion" button is now "📩 To my DM": on shared panels it no longer depends on
+  who pressed last, the card line says how many people get the camera in private (group) or
+  whether you do (private chat). Old keyboards with "🔔 Motion" keep working.
+- A motion clip is a reply to its event post, with the sound of that place; clips of merged
+  events are silent. A "person" after "motion" within the merge window is a new post where it
+  rings instead of a silent edit.
+- `/menu` puts the reply keyboard only in a camera topic and removes it where it cannot work.
+- Texts follow the mode: `/mode` says where events go now, the wizard explains that a group
+  is connected by adding the bot, menu and hints in the location and flat modes.
+
+- Hardware sizing is recounted from new measurements (live installation of 0.3.0, bench on
+  arm64 and amd64 with the detector on the main stream, as cameras added from the chat run):
+  5 cameras fit into 4 GB of RAM (was 8 GB), 6–8 into 6 GB, 3–4 cameras need 2 cores instead
+  of 4. 9–16 cameras need 6–8 cores instead of "4+": detection on the main stream costs three
+  times more CPU in a quiet scene than the earlier bench on the detector stream showed. The
+  table in `docs/sizing.md`, the website calculator and the installer use one model.
+- The installer sizes the video buffer by the cameras that fit into RAM whole (processes and
+  buffer within 85 % of RAM) instead of "25 % of RAM, 512 MB–4 GB", and says how many that is.
+  The old rule did not count the up to 130 s the recorder writes between buffer cleanings and
+  could overflow the tmpfs with as many cameras as it promised.
+
+- The website and both READMEs describe the platform Dozorcam is built on instead of naming it:
+  the working name "Artel" is dropped, the platform has no name yet.
+
+### Added
+- The video buffer can live on an SSD when RAM is short: `DOZORCAM_BUFFER=disk` for the
+  installer (and `DOZORCAM_BUFFER_PATH` for a separate disk), or `CCTV_BUFFER_DIR` /
+  `CCTV_BUFFER_DISK` in `.env`. RAM then holds only the processes (8 cameras — 4 GB). The
+  installer and the calculator show the disk writes (~16 TB a year per 2 MP camera) and warn
+  against HDDs and SD cards. The buffer volume is not backed up and is removed on uninstall.
+- `scripts/sizing-bench.sh`: the detector on the main stream, the buffer on disk with disk
+  writes, the installer's per-stream limit, memory minute by minute.
+
+### Fixed
+- Flat mode in a group with topics: buttons and the keyboard in a camera or location topic
+  answer in that topic (they answered in General or refused), a reply to a frame in a topic
+  gives the clip.
+- Without a group, the console (➕ search, model, thresholds) answers whoever pressed, not the
+  owner.
+- A camera whose site equals its name joins the location topic of its neighbours on that site.
+- After the map moves (mode change or a group added) the old map is unpinned and says why;
+  coming back to topics pins the "Control" map again.
+- Updating from 0.3.0 unpins its leftover "The camera map has moved…" message: 0.3.0 left it
+  pinned above the live map in the group (after `/mode` back and forth) and in the private chat
+  (after a group was added). Checked once on the first start; other pins are not touched.
+- The settings card is redrawn after turning person detection on or off.
+- "Person detection: turn off" no longer stops all cameras: the engine bridge rebuilt the
+  registry entry from the RTSP proxy addresses (no login, not the camera) and replaced it whole,
+  so the proxy and the whole engine went down. A change from the chat now edits only its own
+  field of the entry on disk; turning detection off and on again gives the same file byte for
+  byte. A stream address without login and password is refused instead of being written.
+- Changing a camera's login and password, or turning person detection on, no longer drops the
+  camera's own person gate (`camera_human_events`) and the detector substream
+  (`detect_substream`); the password change keeps the stream paths of the entry.
+- "🔑 Login and password" on the card of a camera added by its stream address (outside the
+  search) answered "could not detect the camera stream": the password is now checked on the
+  stream addresses of the entry, and a snapshot with the same login gets the new password too.
+- Turning person detection on from the chat was refused by the registry writer ("the address is
+  not rtsp") because the change carried only the flag.
+- The last second of a clip is no longer torn (a smeared or broken last frame): a clip took the
+  segment the recorder was still writing. Clips are cut only from closed segments — the same
+  rule as the detector's — and a motion clip waits 21 s instead of 15 so that its window is
+  closed. The same with the buffer in RAM and on an SSD.
 
 ## [0.3.0] — 2026-10-09
 

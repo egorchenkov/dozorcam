@@ -9,6 +9,10 @@
 - ``location`` — тема на локацию (тег камеры ``location``, иначе площадка реестра);
 - ``flat``     — без тем: группа целиком или, без группы, личка каждого допущенного.
 
+Личка — не следствие пресета: при любом пресете с группой копия события идёт в
+личку тем допущенным, кто включил её у камеры кнопкой «📩 Мне в личку» (подписка,
+`motion_subs`). Без группы личка и есть лента, подписка там — звук.
+
 Пресет лишь заполняет маршруты: у камеры может быть свой режим (`cameras.mode`),
 camera_id при смене режима не меняется. Весь `message_thread_id` бота живёт
 здесь — ядро (bot.py) работает с ``Dest`` и не знает, тема это или личка.
@@ -70,17 +74,20 @@ class Router:
     """Маршруты и темы. Тексты, иконки и адресаты — снаружи: слой не знает i18n.
 
     `group` — группа установки (None — не привязана); `recipients` — кто получает
-    личку в плоском режиме без группы; `t` — перевод ключа каталога; `icon` —
-    иконка темы по подсказкам (площадка, имя).
+    личку в плоском режиме без группы; `asker` — кто нажал (пульт без группы —
+    его личка); `t` — перевод ключа каталога; `icon` — иконка темы по
+    подсказкам (площадка, имя).
     """
 
     def __init__(self, state: State, tg, *, group: Callable[[], int | None],
                  recipients: Callable[[], list[int]], t: Callable[..., str],
-                 icon: Callable[..., str], log=lambda _m: None) -> None:
+                 icon: Callable[..., str], asker: Callable[[], int | None] = lambda: None,
+                 log=lambda _m: None) -> None:
         self.state = state
         self.tg = tg
         self._group = group
         self._recipients = recipients
+        self._asker = asker
         self._t = t
         self._icon = icon
         self.log = log
@@ -151,8 +158,17 @@ class Router:
         if record.location is not None:
             return record.location.strip()
         site = (record.site or "").strip()
-        if site.lower() in {"", camera_id.lower(), (record.title or "").strip().lower()}:
+        if not site:
             return ""
+        if site.lower() in {camera_id.lower(), (record.title or "").strip().lower()}:
+            # Площадка, совпавшая с именем, — локация, если она есть ещё у одной
+            # камеры: «Дача» с соседями «Дача-2/3» на той же площадке не должна
+            # отрываться от них в свою тему.
+            shared = any(other.camera_id != camera_id
+                         and (other.location if other.location is not None else other.site or ""
+                              ).strip().lower() == site.lower()
+                         for other in self.state.active_cameras())
+            return site if shared else ""
         return site
 
     def hashtags(self, camera_id: str) -> str:
@@ -170,10 +186,34 @@ class Router:
 
     # --- маршрут -----------------------------------------------------------------
     def route(self, camera_id: str) -> list[Dest]:
-        """Куда доставлять события камеры. Пусто — маршрут ещё не готов (нет темы/группы).
+        """Куда доставлять события камеры: лента (`feed`) и личные копии
+        подписчиков (`personal_copies`) — событие уходит во все места сразу.
+        Пусто — маршрут ещё не готов (нет темы/группы).
 
         Ничего не создаёт: темы заводит `ensure`.
         """
+        if not self.active(camera_id):
+            return []
+        feed = self.feed(camera_id)
+        return feed + [dest for dest in self.personal_copies(camera_id) if dest not in feed]
+
+    def personal_copies(self, camera_id: str) -> list[Dest]:
+        """Личка подписчиков камеры при привязанной группе. Только допущенные:
+        снятый с доступа (/invite) копий больше не получает. Без группы личка
+        каждого — сама лента, копии не нужны."""
+        if self._group() is None or not self.active(camera_id):
+            return []
+        people = set(self._recipients())
+        return [Dest(user_id) for user_id in self.state.motion_subscribers(camera_id)
+                if user_id in people]
+
+    def personal_copy(self, camera_id: str, dest: Dest) -> bool:
+        """Место — личная копия события, а не лента."""
+        return dest.private and dest in self.personal_copies(camera_id)
+
+    def feed(self, camera_id: str) -> list[Dest]:
+        """Лента камеры по пресету: тема камеры, тема локации, группа целиком или,
+        без группы, личка каждого допущенного."""
         if not self.active(camera_id):
             return []
         group = self._group()
@@ -194,14 +234,23 @@ class Router:
 
     def primary(self, camera_id: str) -> Dest | None:
         """Первое место маршрута — для ответа, когда кнопку нажали не в нём (пульт)."""
-        dests = self.route(camera_id)
+        dests = self.feed(camera_id) or self.route(camera_id)
         return dests[0] if dests else None
 
     def belongs(self, camera_id: str, dest: Dest) -> bool:
-        """Место камеры: её маршрут или её собственная тема. Тема остаётся местом
-        камеры и после смены пресета (/mode): закреплённая там панель не должна
-        превращаться в набор мёртвых кнопок."""
-        return dest in self.route(camera_id) or dest == self.camera_topic(camera_id)
+        """Место камеры: её маршрут, её собственная тема или тема её локации. Темы
+        остаются местом камеры и после смены пресета (/mode): закреплённая там
+        панель и кадры в ленте темы не должны превращаться в мёртвые кнопки."""
+        return (dest in self.route(camera_id) or dest == self.camera_topic(camera_id)
+                or dest == self.location_place(camera_id))
+
+    def location_place(self, camera_id: str) -> Dest | None:
+        """Тема локации камеры, если она заведена (пресет «тема на локацию» сейчас или раньше)."""
+        group = self._group()
+        if group is None:
+            return None
+        thread = self.state.location_topic(self.location(camera_id))
+        return Dest(group, thread) if thread is not None else None
 
     def personal(self, dest: Dest | None) -> bool:
         """Личка допущенного человека: там работают карточка (/cam) и кнопки любой
@@ -220,16 +269,28 @@ class Router:
         """Откуда пришло нажатие или сообщение. Чат None — группа установки
         (старые вызовы и тесты знали только тему).
 
-        Тема имеет смысл только в группе установки при пресете с темами: в личке
-        её нет, а в плоском режиме лента одна, и reply-цепочку обычной
-        супергруппы (у неё тоже есть message_thread_id) темой считать нельзя.
+        Тема имеет смысл только в группе установки: в личке её нет. В плоском
+        режиме тема остаётся, если это наша тема (камеры, локации, пульт): группа
+        с темами, переведённая в «плоско», хранит панели и кадры в темах, и
+        кнопки там обязаны отвечать в ту же тему (жалоба 09.10.2026). Прочий
+        message_thread_id — reply-цепочка обычной супергруппы, а не тема.
         """
         chat = chat_id if chat_id is not None else self._group()
         if chat is None:
             return None
-        if chat != self._group() or not self.forum:
+        if chat != self._group() or (not self.forum and not self.known_thread(thread)):
             thread = None
         return Dest(chat, thread)
+
+    def known_thread(self, thread: int | None) -> bool:
+        """Тема, заведённая ботом: камеры, локации или пульта."""
+        if thread is None:
+            return False
+        if self.state.camera_for_thread(thread) is not None:
+            return True
+        if any(saved == thread for _location, saved, _title in self.state.location_topics()):
+            return True
+        return self.state.get_service(CONSOLE_KEY) == str(thread)
 
     def unplaced(self, dest: Dest) -> bool:
         """Группа с темами, но нажатие вне темы (General): место не известно —
@@ -243,11 +304,16 @@ class Router:
         return self.state.camera_for_thread(dest.thread_id)
 
     def silent_for(self, camera_id: str, dest: Dest) -> bool:
-        """Звук события: в личке — подписан ли этот человек, в группе — подписан ли кто-нибудь."""
-        subscribers = self.state.motion_subscribers(camera_id)
+        """Звук события: в личке — подписан ли этот человек; в группе — тихо всегда.
+
+        Подписчик слышит событие в личке (копия со звуком), и звонок в группе
+        был бы вторым сигналом о том же. До 0.3.1 группа звенела, «если
+        подписан хоть кто-то», — строка и кнопка подписки поэтому и спорили
+        друг с другом (аудит 09.10.2026, Б-5).
+        """
         if dest.private:
-            return dest.chat_id not in subscribers
-        return not subscribers
+            return dest.chat_id not in self.state.motion_subscribers(camera_id)
+        return True
 
     # --- темы ----------------------------------------------------------------------
     async def ensure(self, camera_id: str, title: str, site: str | None = None,
@@ -363,6 +429,11 @@ class Router:
             if group is not None:
                 return Dest(group)
             recipients = self._recipients()
+            # Пульт без группы — личка того, кто нажал: итог поиска камер, меню
+            # модели и порогов приходят ему, а не владельцу (аудит 09.10, Б-9).
+            asker = self._asker()
+            if asker in recipients:
+                return Dest(asker)
             return Dest(recipients[0]) if recipients else None
         saved = self.state.get_service(CONSOLE_KEY)
         if group is None or saved is None:

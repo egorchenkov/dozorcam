@@ -4,7 +4,8 @@
 # Образ коммита — в локальный реестр (pull по digest как у человека), файлы релиза —
 # scripts/release-assets.sh, Telegram и GitHub Releases — мок tests/install/mock_api.py.
 # Цикл: install.sh → файлы и .env → compose config → оба healthy → SETUP в журнале и
-# ссылка `dozorcam code` → backup → uninstall --volumes → restore (тот же код владельца) →
+# ссылка `dozorcam code` → повторная установка с буфером на диске → backup → uninstall
+# --volumes → restore (тот же код владельца) →
 # update на «последний релиз» → update на образ с ломаным healthcheck и автооткат →
 # uninstall. Запуск: в CI (джоб install-smoke) и руками рядом с другой установкой:
 #
@@ -139,18 +140,37 @@ dcs exec -T bot printenv CCTV_UPDATE_CHECK | grep -qx 0 || fail "dozorcam restar
 code0=$(dz code | sed -n 's|.*https://t.me/dozorcam_smoke_bot?start=\([A-Z0-9]*\).*|\1|p' | head -n 1)
 [ "$code0" = "$code1" ] || fail "restart lost the bot state (code $code1 → $code0)"
 
+log "buffer on disk: install.sh again with DOZORCAM_BUFFER=disk"
+# Повторная установка в том же каталоге: .env и состояние остаются, буфер переезжает в том
+# engine-buffer (RAM — только процессы); писать в него должен uid движка.
+DOZORCAM_DIR=$dir DOZORCAM_VERSION=$version DOZORCAM_DOWNLOAD_URL="file://$work/dist/$version" \
+  DOZORCAM_IMAGE=$image DOZORCAM_TELEGRAM_API="http://127.0.0.1:$api_port" DOZORCAM_TOKEN=$token \
+  DOZORCAM_LANG=en DOZORCAM_TZ=Asia/Kathmandu DOZORCAM_BUFFER=disk \
+  setsid sh "$root/scripts/install.sh" </dev/null | tee "$work/install-disk.out"
+want "CCTV_BUFFER_DIR=/var/lib/cctv/buffer-disk"
+want "CCTV_BUFFER_TMPFS=64m"
+grep -q "SSD only" "$work/install-disk.out" || fail "install.sh did not warn about disk writes"
+healthy
+dcs exec -T engine printenv CCTV_BUFFER_DIR | grep -qx /var/lib/cctv/buffer-disk || fail "engine: CCTV_BUFFER_DIR is not passed"
+dcs exec -T engine sh -c 'touch /var/lib/cctv/buffer-disk/.probe && rm /var/lib/cctv/buffer-disk/.probe' ||
+  fail "engine cannot write to the disk buffer"
+code3=$(dz code | sed -n 's|.*https://t.me/dozorcam_smoke_bot?start=\([A-Z0-9]*\).*|\1|p' | head -n 1)
+[ "$code3" = "$code1" ] || fail "reinstall lost the bot state (code $code1 → $code3)"
+
 log "backup → uninstall --volumes → restore"
 dz backup "$work/backup.tar.gz"
 tar -tzf "$work/backup.tar.gz" >"$work/backup.list"
 for member in ./.env ./compose.yml ./dozorcam-backup.txt ./volumes/engine-state.tar ./volumes/bot-state.tar; do
   grep -qx "$member" "$work/backup.list" || fail "backup has no $member"
 done
+grep -q engine-buffer "$work/backup.list" && fail "backup took the video buffer volume"
 [ "$(stat -c %a "$work/backup.tar.gz")" = 600 ] || fail "backup is not 0600"
 healthy
 project=$(dcs config | sed -n 's/^name: *//p' | head -n 1)
 dz uninstall -y --volumes
 [ -z "$(dcs ps -aq)" ] || fail "containers left after uninstall"
 docker volume inspect "${project}_bot-state" >/dev/null 2>&1 && fail "bot-state volume left after uninstall --volumes"
+docker volume inspect "${project}_engine-buffer" >/dev/null 2>&1 && fail "engine-buffer volume left after uninstall"
 [ -f "$dir/.env" ] || fail "uninstall removed .env"
 dz restore -y "$work/backup.tar.gz"
 healthy

@@ -285,10 +285,13 @@ class FlatWizardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.t("wizard.group_ready_flat"), self.tg.of("send_message")[-1]["text"])
         self.assertEqual([], self.tg.of("create_forum_topic"))
         self.assertIn(PLAIN_GROUP, self.pinned())
-        # Карта в личке честно говорит, что переехала.
+        # Карта в личке честно говорит, что переехала в группу и почему, и
+        # открепляется (аудит 09.10.2026, Б-10).
         moved = [e for e in self.tg.of("edit_message_text") if e["chat_id"] == OWNER
-                 and e["text"] == self.t("map.moved")]
+                 and e["text"] == self.t("map.moved_group")]
         self.assertEqual(1, len(moved))
+        self.assertIn((OWNER, moved[0]["message_id"]),
+                      [(u["chat_id"], u["message_id"]) for u in self.tg.of("unpin_chat_message")])
         self.assertIsNone(self.bot.routes.home_screen(Dest(OWNER)))
         await self.bot.on_event(self.motion("m2"))
         self.assertEqual((PLAIN_GROUP, None), self.photo_chats()[-1])
@@ -309,7 +312,8 @@ class FlatWizardTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.t("wizard.or_flat"), text)
         # /mode flat в этой же группе — лента одной группой, без тем.
         answer = await self.bot.on_mode(OWNER, ["flat"], chat_id=PLAIN_GROUP)
-        self.assertEqual(self.t("mode.changed", preset=self.t("mode.preset.flat")), answer)
+        self.assertEqual(self.t("mode.changed", preset=self.t("mode.preset.flat"),
+                                where=self.t("mode.where.flat_group")), answer)
         self.assertEqual([], self.tg.of("create_forum_topic"))
         self.assertIn(PLAIN_GROUP, self.pinned())
         await self.bot.on_event(self.motion("m1"))

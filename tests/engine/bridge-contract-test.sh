@@ -18,23 +18,42 @@ ffmpeg -y -loglevel error -i "$work/source.mp4" -c copy -f segment -segment_time
 cat > "$work/cameras.json" <<JSON
 {"cameras":[{"camera_id":"city","title":"Город","site":"test","rtsp_url":"$work/source.mp4"}]}
 JSON
-PYTHONPATH="$root" "$py" - "$work" <<'PY'
+# Буфер как у живого рекордера: записанные сегменты закрыты (старше выдержки), а новейший
+# по имени ffmpeg ещё пишет — в клип он не идёт (см. п. 7 ниже).
+cat > "$work/recording.py" <<'REC'
+import datetime, os, pathlib, time
+
+
+def recording(target: pathlib.Path) -> pathlib.Path:
+    """Закрыть записанное (mtime в прошлом) и открыть «пишется сейчас» новее всех по имени."""
+    for segment in target.glob("*.ts"):
+        os.utime(segment, (time.time() - 10, time.time() - 10))
+    newest = max(datetime.datetime.strptime(p.stem, "%Y-%m-%dT%H:%M:%SZ") for p in target.glob("*.ts"))
+    live = target / (newest + datetime.timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ.ts")
+    live.write_bytes(b"")
+    return live
+REC
+PYTHONPATH="$root:$work" "$py" - "$work" <<'PY'
 import json, pathlib, sys
 from cctv.engine.cctv_bridge import Bridge
+from recording import recording
 p = pathlib.Path(sys.argv[1]); bridge = Bridge(json.loads((p / "cameras.json").read_text()), p / "store", "https://localhost:9443")
 camera = bridge.cameras["city"]
 frame, _ = bridge.snapshot(camera)
 segment = next((p / "store/buffer/city").glob("*.ts"))
+live = recording(p / "store/buffer/city")
 clip, _ = bridge.clip(camera, segment.stem.replace("Z", "+00:00"))
+live.unlink()  # остальные проверки берут из этого буфера первый сегмент
 assert frame[:2] == b"\xff\xd8" and len(clip) > 1000
 PY
 # Регрессия TZ: сегменты пишет реальный segment_command() при неUTC-поясе, а центр окна
 # берётся из настоящего UTC-времени — так ловится сдвиг имени сегмента, который прежний
 # тест сокращал, вычисляя центр из самого имени файла.
-TZ="Asia/Tbilisi" PYTHONPATH="$root" "$py" - "$work" <<'TZCHECK'
+TZ="Asia/Tbilisi" PYTHONPATH="$root:$work" "$py" - "$work" <<'TZCHECK'
 import datetime, json, pathlib, subprocess, sys
 from cctv.engine.cctv_bridge import Bridge
 from cctv.engine.cctv_pipeline import segment_command
+from recording import recording
 
 work = pathlib.Path(sys.argv[1])
 target = work / "tzstore/buffer/city"
@@ -47,6 +66,7 @@ stamp = datetime.datetime.strptime(names[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinf
 skew = abs((datetime.datetime.now(datetime.timezone.utc) - stamp).total_seconds())
 assert skew < 120, f"segment name is not UTC: skew {skew:.0f}s"
 
+recording(target)
 bridge = Bridge(json.loads((work / "cameras.json").read_text()), work / "tzstore", "https://localhost")
 centre = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 clip, _ = bridge.clip(bridge.cameras["city"], centre)
@@ -61,6 +81,7 @@ audio_target = work / "audiostore/buffer/city"
 audio_target.mkdir(parents=True)
 command, env = segment_command(str(source), audio_target)
 subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, env=env, check=True)
+recording(audio_target)
 audio_bridge = Bridge(json.loads((work / "cameras.json").read_text()), work / "audiostore", "https://localhost")
 clip, _ = audio_bridge.clip(audio_bridge.cameras["city"], centre)
 (work / "audio-clip.mp4").write_bytes(clip)
@@ -72,7 +93,7 @@ TZCHECK
 # Регрессии 24.08.2026: детектор движения и глубина буфера. Каждая проверка бьёт
 # в сам дефект, а не в его следствие.
 PYTHONPATH="$root" "$py" - "$work" <<'MOTION'
-import datetime, json, pathlib, sys
+import datetime, json, os, pathlib, subprocess, sys, time
 from cctv.engine import cctv_pipeline as pipeline
 from cctv.engine.cctv_bridge import Bridge, BridgeError
 
@@ -133,10 +154,48 @@ name = lambda offset: (centre + datetime.timedelta(seconds=offset)).strftime("%Y
 for offset in (-5, 0, 5):
     (holes / name(offset)).write_bytes(real)
 (holes / name(10)).write_bytes(b"")           # и «пишется прямо сейчас» в хвосте окна
+for segment in holes.glob("*.ts"):
+    os.utime(segment, (time.time() - 10, time.time() - 10))
 hole_bridge = Bridge(json.loads((work / "cameras.json").read_text()), work / "holestore", "https://localhost")
 clip_body, _ = hole_bridge.clip(hole_bridge.cameras["city"], centre.isoformat())
 assert len(clip_body) > 1000, "клип не собрался из окна с пустыми сегментами"
 assert clip_body[4:8] == b"ftyp", "результат не MP4"
+
+# 7. В клип — только закрытые сегменты (стенд LXD 09.10.2026: последний кадр 2 из 3 клипов
+#    движения рвался — «Invalid level prefix»). Новейший по имени ffmpeg ещё пишет: здесь
+#    это половина настоящего сегмента, как её видит читатель посреди записи; сегмент,
+#    закрытый меньше выдержки назад, тоже ждёт. Клип — ровно закрытые, без ошибок декодера.
+torn = work / "tornstore/buffer/city"
+torn.mkdir(parents=True)
+centre = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+tname = lambda offset: (centre + datetime.timedelta(seconds=offset)).strftime("%Y-%m-%dT%H:%M:%SZ") + ".ts"
+for offset in (-10, -5, 0):
+    (torn / tname(offset)).write_bytes(real)
+    os.utime(torn / tname(offset), (time.time() - 10, time.time() - 10))
+(torn / tname(5)).write_bytes(real[: len(real) // 2 + 333])   # открыт и недописан
+torn_bridge = Bridge(json.loads((work / "cameras.json").read_text()), work / "tornstore", "https://localhost")
+
+
+def clip_check(label: str) -> int:
+    body, _ = torn_bridge.clip(torn_bridge.cameras["city"], centre.isoformat())
+    (work / "torn-clip.mp4").write_bytes(body)
+    errors = subprocess.run(["ffmpeg", "-v", "error", "-i", str(work / "torn-clip.mp4"), "-f", "null", "-"],
+                            capture_output=True, text=True).stderr.strip()
+    assert not errors, f"{label}: клип с ошибками декодера: {errors[:200]}"
+    frames = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
+                             "stream=nb_read_frames", "-of", "csv=p=0", str(work / "torn-clip.mp4")],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    return int(frames)
+
+
+one = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
+                      "stream=nb_read_frames", "-of", "csv=p=0", "-f", "mpegts", "-"], input=real,
+                     capture_output=True, check=True).stdout.decode().split()[0]   # у mpegts — ещё и строки программ
+assert clip_check("открытый новейший") == 3 * int(one), "в клип попал открытый сегмент"
+os.utime(torn / tname(0), None)                                  # только что закрыт — ещё в выдержке
+assert clip_check("свежезакрытый") == 2 * int(one), "в клип попал сегмент в выдержке"
+from cctv.engine.cctv_bridge import MOTION_CLIP_DELAY_SEC
+assert MOTION_CLIP_DELAY_SEC >= 15 + pipeline.RECORDED_SEGMENT_SEC, "клип движения раньше, чем закроется хвост окна"
 
 # 6. Снимок не должен звать несуществующий -rw_timeout: с ним ffmpeg выходил сразу
 #    и основной RTSP-путь всегда молча уступал ISAPI-fallback.
@@ -272,4 +331,4 @@ response="$(curl -sk --cert "$work/client.crt" --key "$work/client.key" --cacert
 curl -sk --cert "$work/client.crt" --key "$work/client.key" --cacert "$work/ca.crt" -H 'content-type: application/json' -d '{"request_id":"11111111-1111-1111-1111-111111111111","camera_id":"city","kind":"snapshot","requested_at":"2026-08-24T00:00:00Z"}' https://localhost:$port/v1/media-requests | grep -q 'accepted'
 curl -sk --cert "$work/client.crt" --key "$work/client.key" --cacert "$work/ca.crt" -H 'content-type: application/json' -d '{"request_id":"11111111-1111-1111-1111-111111111111","camera_id":"city","kind":"snapshot","requested_at":"2026-08-24T00:00:00Z"}' https://localhost:$port/v1/media-requests | grep -q 'accepted'
 "$py" -m py_compile "$root/cctv/engine/cctv_bridge.py" "$root/cctv/engine/cctv_pipeline.py"
-echo 'PASS: snapshot+event clip, snapshot Basic-auth fallback, per-camera motion threshold, UTC segment naming + clip window, motion score scale, grayscale fallback, buffer depth, clip_window_empty, empty segment skipped in clip window, cross-process media tokens, token expiry+sweep, registry freshness, frame geometry guard, loopback http, non-loopback refusal, mTLS rejection, registry redaction, request idempotency, Python syntax'
+echo 'PASS: snapshot+event clip, snapshot Basic-auth fallback, per-camera motion threshold, UTC segment naming + clip window, motion score scale, grayscale fallback, buffer depth, clip_window_empty, empty segment skipped in clip window, open/unsettled segment kept out of clip, cross-process media tokens, token expiry+sweep, registry freshness, frame geometry guard, loopback http, non-loopback refusal, mTLS rejection, registry redaction, request idempotency, Python syntax'

@@ -28,7 +28,7 @@
 <div class="wrap">
 <section class="hero" style="padding-top:48px">
   <div>
-    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Релиз <b><!--site:version-->0.3.0<!--/site--></b> · установка одной командой, группа с темами не обязательна →</a>
+    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Релиз <b><!--site:version-->0.3.1<!--/site--></b> · установка одной командой, группа с темами не обязательна →</a>
     <h1>Ваши камеры, ваш Telegram, без облака</h1>
     <p class="lead">Dozorcam следит за IP-камерами на вашем Linux-узле, распознаёт <b>людей</b> — а не листья,
     тени и кошку — и присылает в Telegram снимок с человеком в рамке и клип этого момента: прямо в личку,
@@ -89,9 +89,9 @@
     <li><b>5 · Telegram</b>Снимок с рамкой туда, куда идут события; клип — по кнопке.</li>
   </ol>
   <div class="grid c3" style="margin-top:22px">
-    <div class="card new"><h3>Новое в <!--site:version-->0.3.0<!--/site-->: установка одной командой</h3><p>Одна строка ставит Docker, если его нет, сверяет файлы релиза, спрашивает токен бота и печатает ссылку с QR-кодом. Дальше — <code>dozorcam update</code>, <code>backup</code>, <code>restore</code>, <code>uninstall</code>.</p></div>
+    <div class="card new"><h3>Новое в <!--site:version-->0.3.1<!--/site-->: группа и личка сразу</h3><p>Каждое событие идёт в группу и копией в личку тем, кто нажал <b>📩 Мне в личку</b> на карточке камеры, — в любом режиме. Клип — ответом на пост события; правка камеры из чата больше не останавливает остальные. На 3–8 камер нужно меньше RAM, а буфер видео можно держать на SSD.</p></div>
     <div class="card new"><h3>События — куда удобно</h3><p>Группа с темами больше не обязательна: начните в личке одним нажатием, переходите в группу или темы позже. Мастер закрепляет свой прогресс и сам проверяет группу.</p></div>
-    <div class="card new"><h3>Карта вместо пульта</h3><p>Закреплённая карта камер с карточками, склейка событий, хэштеги, <code>/invite</code> для ещё одного человека, время в вашем поясе. <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Список изменений</a></p></div>
+    <div class="card new"><h3>Карта вместо пульта</h3><p>Закреплённая карта камер с карточками, склейка событий, хэштеги, <code>/invite</code> для ещё одного человека, время в вашем поясе. <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.ru.md">Список изменений</a></p></div>
   </div>
 </section>
 
@@ -102,7 +102,7 @@
   <div class="grid c3" style="margin-top:16px">
     <div class="card"><h3>Docker — тоже</h3><p>Нет Docker или плагина compose — установщик предложит официальный скрипт <code>get.docker.com</code> (y/N).</p></div>
     <div class="card"><h3>Проверенные файлы</h3><p>Файлы релиза кладутся в <code>~/dozorcam</code> и сверяются с <code>SHA256SUMS</code> релиза; образ закрепляется по digest.</p></div>
-    <div class="card"><h3>Под вашу машину</h3><p>Токен проверяется в Telegram, язык и часовой пояс берутся с хоста, буфер в RAM — по памяти машины.</p></div>
+    <div class="card"><h3>Под вашу машину</h3><p>Токен проверяется в Telegram, язык и часовой пояс берутся с хоста, буфер в RAM — по памяти машины; мало RAM — буфер на SSD параметром <code>DOZORCAM_BUFFER=disk</code>.</p></div>
   </div>
   <p class="note">В конце — ссылка <code>t.me/&lt;ваш бот&gt;?start=&lt;код&gt;</code> и QR-код. Хотите руками?
   <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/install.ru.md#установка-вручную-через-docker-compose">Установка через docker compose</a> ·
@@ -250,18 +250,23 @@ dozorcam restore &lt;файл&gt;</code></pre><p>Один файл с настр
           <option value="x86">x86-64 настольный или серверный процессор 2020 года и новее</option>
           <option value="a72">ARM64 постарше: Raspberry Pi 4</option>
         </select></label>
+      <label>Буфер видео
+        <select id="c-buf">
+          <option value="ram" selected>В RAM (по умолчанию, лучше)</option>
+          <option value="ssd">На SSD (когда RAM мало)</option>
+        </select></label>
     </form>
     <div class="calc-out" aria-live="polite">
       <div class="res"><span>RAM</span><b id="r-ram">4 ГБ</b><small id="r-ram-d"></small></div>
       <div class="res"><span>CPU</span><b id="r-cpu">4 ядра</b><small id="r-cpu-d"></small></div>
-      <div class="res"><span>Диск</span><b>2 ГБ</b><small>образ ~0,8 ГБ плюс обновления; видео живёт в RAM</small></div>
+      <div class="res"><span>Диск</span><b id="r-disk">2 ГБ</b><small id="r-disk-d">образ ~0,8 ГБ плюс обновления; видео живёт в RAM</small></div>
       <p class="pick" id="r-pick"></p>
       <p class="warn" id="r-warn" hidden></p>
     </div>
   </div>
-  <noscript><p class="note">Калькулятору нужен JavaScript. На глаз: 1–2 камеры — 2 ГБ RAM и 2 ядра, 3–4 — 4 ГБ и 4 ядра, 5–8 — 8 ГБ и 4 ядра.</p></noscript>
+  <noscript><p class="note">Калькулятору нужен JavaScript. На глаз для камер 2 Мп: 1–2 — 2 ГБ RAM и 2 ядра, 3–4 — 4 ГБ и 2 ядра, 5–8 — 4–6 ГБ и 4 ядра, 9–16 — 8–16 ГБ и 6–8 ядер; с буфером видео на SSD RAM — 2 ГБ до 6 камер и 4 ГБ до 16.</p></noscript>
   <div class="grid c2" style="margin-top:18px">
-    <div class="card"><h3>Замерено, а не придумано</h3><p>Боевая установка на 4 камеры на ARM-сервере (Neoverse-N1): в среднем около 0,5 ядра, движок 1,6 ГБ при буфере 2 ГБ в RAM, бот 66 МБ, образ 800 МБ. Плюс бенч на 1–8 синтетических камер с жёсткими лимитами CPU и памяти на arm64 и amd64 — <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/sizing.ru.md">методика и цифры</a>.</p></div>
+    <div class="card"><h3>Замерено, а не придумано</h3><p>Боевая установка на 4 камеры на ARM-сервере (Neoverse-N1): в среднем 0,76 ядра за 7,5 часа, процессы движка 0,77 ГБ плюс буфер видео, бот 0,1 ГБ, образ 800 МБ. Плюс бенч на 1–8 синтетических камер с жёсткими лимитами CPU и памяти на arm64 и amd64, с буфером в RAM и на диске — <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/sizing.ru.md">методика и цифры</a>.</p></div>
     <div class="card"><h3>Что не потянет</h3><p>Платы с 1 ГБ RAM (Raspberry Pi 3, Zero 2): система, Docker, детектор и буфер даже одной камеры не помещаются. 32-битный ARM (armv7, старые NAS) — образа нет. Цифры Pi 4 — оценка (ядро примерно вдвое медленнее замеренного ARM).</p></div>
   </div>
 </section>
@@ -291,11 +296,10 @@ dozorcam restore &lt;файл&gt;</code></pre><p>Один файл с настр
   <div class="platform">
     <div class="mark" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="24" cy="10" r="5"/><circle cx="10" cy="36" r="5"/><circle cx="38" cy="36" r="5"/><path d="M21 14.5 13 31.5M27 14.5l8 17M15 36h18"/><circle cx="24" cy="27" r="3" fill="#fff" stroke="none"/></svg></div>
     <div>
-      <div class="kicker">Создано на платформе</div>
-      <h2><!--site:platform.ru-->Артель<!--/site--> — универсальная платформа разработки приложений через Telegram-ботов</h2>
-      <p>Dozorcam создан на <!--site:platform.ru_in-->Артели<!--/site--> — универсальной платформе разработки приложений через
-      Telegram-ботов, разработанной Романом Егорченковым. Исходный код платформы скоро будет опубликован на GitHub —
-      следите за обновлениями в его репозиториях.</p>
+      <div class="kicker">Платформа</div>
+      <h2>Создано на <!--site:platform.ru_in-->универсальной платформе разработки приложений и ИИ-агентов через Telegram-ботов<!--/site--></h2>
+      <p>Dozorcam создан на <!--site:platform.ru_in-->универсальной платформе разработки приложений и ИИ-агентов через Telegram-ботов<!--/site-->, разработанной Романом Егорченковым.
+      Исходный код платформы скоро будет опубликован на GitHub — следите за обновлениями в его репозиториях.</p>
       <a class="btn" href="https://github.com/egorchenkov">github.com/egorchenkov</a>
     </div>
   </div>
@@ -314,9 +318,9 @@ dozorcam restore &lt;файл&gt;</code></pre><p>Один файл с настр
 
 <footer>
   <div class="wrap">
-    <span>Dozorcam <!--site:version-->0.3.0<!--/site--></span>
+    <span>Dozorcam <!--site:version-->0.3.1<!--/site--></span>
     <a href="https://github.com/egorchenkov/dozorcam/releases">Релизы</a>
-    <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Список изменений</a>
+    <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.ru.md">Список изменений</a>
     <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/README.md">Документация</a>
     <a href="https://github.com/egorchenkov/dozorcam">GitHub</a>
     <span class="sep"></span>
@@ -327,16 +331,21 @@ dozorcam restore &lt;файл&gt;</code></pre><p>Один файл с настр
 var CALC_TEXT = {
   gb: " ГБ", dec: ",",
   cores: function (n) { return n + (n % 10 === 1 && n % 100 !== 11 ? " ядро" : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? " ядра" : " ядер"); },
-  ramD: "занято ≈ {use} ГБ: буфер видео {buf} ГБ ({min} мин на камеру), движок {eng} ГБ, бот и система {sys} ГБ",
-  cpuD: "в среднем ≈ {avg} ядра, все камеры разом ≈ {peak} — сверх этого детектор встаёт в очередь, события приходят позже",
-  tmpfs: "Ручная установка: CCTV_BUFFER_TMPFS={tmpfs}m и CCTV_BUFFER_MAX_BYTES={cap} в .env (установщик задаёт оба сам).",
+  over: "больше 32 ГБ",
+  ramD: "занято до ≈ {use} ГБ: буфер видео {buf} ГБ ({min} мин на камеру), движок {eng} ГБ, бот и система {sys} ГБ",
+  ramSsd: "занято ≈ {use} ГБ: движок {eng} ГБ, бот и система {sys} ГБ; буфер видео — на SSD",
+  ssdHint: "С буфером на SSD — {gb} ГБ",
+  tmpfs: "Ручная установка: CCTV_BUFFER_TMPFS={tmpfs}m и CCTV_BUFFER_MAX_BYTES={cap} в .env (установщик задаёт оба сам)",
+  cpuD: "в среднем ≈ {avg} ядра — не больше половины ядер; все камеры с движением разом ≈ {peak}: сверх числа ядер детектор встаёт в очередь, события приходят позже",
+  diskRam: "образ ~0,8 ГБ плюс обновления; видео живёт в RAM",
+  diskSsd: "SSD: образ и обновления плюс буфер {buf} ГБ; запись ≈ {rate} МБ/с без перерыва, ≈ {tb} ТБ в год — сверьте с TBW вашего SSD. Не HDD и не SD-карта",
   pick: { 2: "Raspberry Pi 4/5 (от 2 ГБ), Orange Pi 5, любой мини-ПК", 4: "Raspberry Pi 5 (4–8 ГБ), мини-ПК на Intel N100",
           8: "мини-ПК на Intel N100/N305 с 8 ГБ, домашний сервер", 16: "домашний сервер или NAS с 16 ГБ (amd64/arm64)",
           32: "сервер с 32 ГБ — или камеры на две установки" },
   example: "Подойдёт, например: ",
   slow: "Цифры Pi 4 — оценка: его ядра примерно вдвое медленнее замеренного ARM.",
   lag: "Столько людных сцен держат очередь детектора полной: события будут приходить с опозданием. Помогут собственное распознавание людей камеры или две установки.",
-  est: "Цифры мини-ПК — оценка: считаем как замеренный ARM-сервер, для N100 это с запасом.",
+  est: "Цифры мини-ПК — оценка: ядро N100 считаем как vCPU замеренного x86-сервера, модель людей — чуть медленнее (нет AVX-512).",
   split: "Больше 16 ГБ: лучше разнести камеры на две установки."
 };
 </script>

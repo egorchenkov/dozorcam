@@ -20,11 +20,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: lscpu | sed -n '1,20p'; free -m; docker version --format '{{.Server.Version}}'
       - run: docker pull -q "${{ inputs.image }}"
-      # камер, сцена, ядер: тихо 1/4/8, движение без пауз 1/4 на двух ядрах и 4 на одном.
+      # Как установка из чата: лимит 200 МБ на поток, детектор на основном потоке (substream 0);
+      # камер, сцена, ядер, substream: тихо 1/4/8, движение 1/4, для сравнения 8 на детекторном.
       - run: |
-          for spec in "1 quiet 2" "4 quiet 2" "8 quiet 2" "1 busy 2" "4 busy 2" "4 busy 1"; do
+          for spec in "1 quiet 2 0" "4 quiet 2 0" "8 quiet 2 0" "1 busy 2 0" "4 busy 2 0" "8 quiet 2 1"; do
             set -- $spec
-            scripts/sizing-bench.sh -n "$1" -s "$2" -c "$3" -m 4g -w 60 -d 120 \
+            CCTV_BENCH_STREAM_CAP_MB=200 CCTV_BENCH_SUBSTREAM="$4" \
+              scripts/sizing-bench.sh -n "$1" -s "$2" -c "$3" -m 6g -w 60 -d 120 \
               -i "${{ inputs.image }}" -o sizing.jsonl | tail -1
           done
       - uses: actions/upload-artifact@v4

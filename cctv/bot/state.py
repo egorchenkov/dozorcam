@@ -124,6 +124,15 @@ CREATE TABLE IF NOT EXISTS event_posts (
     merged      INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (camera_id, chat_id, thread_key)
 );
+CREATE TABLE IF NOT EXISTS event_messages (
+    event_id   TEXT NOT NULL,
+    chat_id    INTEGER NOT NULL,
+    thread_key INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    fresh      INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (event_id, chat_id, thread_key)
+);
 CREATE TABLE IF NOT EXISTS screens (
     chat_id    INTEGER NOT NULL,
     message_id INTEGER NOT NULL,
@@ -423,6 +432,25 @@ class State:
         self.db.execute("DELETE FROM event_posts WHERE camera_id=? AND chat_id=? AND thread_key=?",
                         (camera_id, chat_id, thread_id or 0))
 
+    # --- пост события в каждом месте: клип движения — ответом на него ----------
+    def remember_event_message(self, event_id: str, chat_id: int, thread_id: int | None,
+                               message_id: int, *, fresh: bool) -> None:
+        """Пост, в котором событие показано в этом месте. `fresh` — свой пост
+        (со своим звуком), иначе событие вклеено в чужой пост правкой (тихо)."""
+        self.db.execute(
+            "INSERT OR REPLACE INTO event_messages(event_id, chat_id, thread_key, message_id, "
+            "fresh, created_at) VALUES(?,?,?,?,?,?)",
+            (event_id, chat_id, thread_id or 0, message_id, int(fresh), self._now()),
+        )
+
+    def event_message(self, event_id: str, chat_id: int, thread_id: int | None) -> tuple[int, bool] | None:
+        """(message_id, свой ли пост) события в этом месте или None."""
+        row = self.db.execute(
+            "SELECT message_id, fresh FROM event_messages WHERE event_id=? AND chat_id=? AND thread_key=?",
+            (event_id, chat_id, thread_id or 0),
+        ).fetchone()
+        return (row["message_id"], bool(row["fresh"])) if row is not None else None
+
     # --- экраны: карта и карточки -------------------------------------------
     def _screen(self, row) -> Screen:
         return Screen(row["chat_id"], row["message_id"], row["thread_key"] or None,
@@ -715,6 +743,8 @@ class State:
         cur = self.db.execute(
             "DELETE FROM seen_events WHERE seen_at <= ?", (self._now() - ttl_sec,)
         )
+        # Связь «событие → пост» нужна клипу движения (через ~15 с) — живёт столько же.
+        self.db.execute("DELETE FROM event_messages WHERE created_at <= ?", (self._now() - ttl_sec,))
         return cur.rowcount
 
     # --- подписки на движение --------------------------------------------

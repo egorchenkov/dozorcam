@@ -139,6 +139,7 @@ async def _amain() -> int:
     await core.sync_registry()
     await core.refresh_all_panels(force=True)
     await core.ensure_topic_icons()
+    await core.unpin_stale_moved()
 
     chores = asyncio.create_task(housekeeping())
     panels = asyncio.create_task(panel_refresh())
@@ -270,9 +271,13 @@ def register_handlers(application, core, state) -> None:
             return
         message = update.effective_message
         # В теме камеры — клавиатура с её именем, иначе список камер (маршрут решает ядро).
+        # Вне темы камеры клавиатура не ставится: там она не работает (аудит 09.10, Б-4).
         answer = await core.show_keyboard(getattr(message, "message_thread_id", None),
                                           chat_id=message.chat_id)
-        await message.reply_text(answer or await core.menu_text(), reply_markup=core.reply_keyboard())
+        if answer:
+            await message.reply_text(answer, reply_markup=core.reply_keyboard())
+            return
+        await message.reply_text(await core.menu_text(), reply_markup=core.menu_keyboard(message.chat_id))
 
     async def on_button(update, _ctx):
         query = update.callback_query

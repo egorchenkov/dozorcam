@@ -40,9 +40,14 @@ services:
       CCTV_MAX_TOTAL_BYTES: ${CCTV_STORAGE_BUDGET_BYTES:-2684354560}
       CCTV_STORAGE_BUDGET_BYTES: ${CCTV_STORAGE_BUDGET_BYTES:-2684354560}
       CCTV_MIN_FREE_BYTES: ${CCTV_MIN_FREE_BYTES:-67108864}
+      # Буфер на диске вместо RAM, если памяти мало: CCTV_BUFFER_DIR=/var/lib/cctv/buffer-disk
+      # (установщик: DOZORCAM_BUFFER=disk). Там — том engine-buffer или каталог хоста
+      # CCTV_BUFFER_DISK (только SSD: кольцо пишется непрерывно, ~0,5 МБ/с на камеру).
+      CCTV_BUFFER_DIR: ${CCTV_BUFFER_DIR:-/var/lib/cctv/buffer}
     volumes:
       - ${CCTV_CONFIG_PATH:-./config}:/etc/cctv:ro
       - engine-state:/var/lib/cctv/state
+      - ${CCTV_BUFFER_DISK:-engine-buffer}:/var/lib/cctv/buffer-disk
     tmpfs:
       - /var/lib/cctv/buffer:size=${CCTV_BUFFER_TMPFS:-2g},uid=10001,gid=10001,mode=0700
       - /var/lib/cctv/spool:size=${CCTV_SPOOL_TMPFS:-512m},uid=10001,gid=10001,mode=0700
@@ -81,3 +86,4 @@ services:
 volumes:
   engine-state:
   bot-state:
+  engine-buffer:   # пуст, пока буфер в RAM; не состояние — backup его не берёт

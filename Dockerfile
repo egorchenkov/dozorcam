@@ -46,9 +46,10 @@ RUN pip wheel --no-cache-dir --disable-pip-version-check --no-deps -w /tmp/wheel
 COPY scripts/retention-guard.sh /out/app/scripts/retention-guard.sh
 # Лицензия и перечень сторонних компонентов (ffmpeg GPL, модель, пакеты) — внутри образа.
 COPY LICENSE NOTICE THIRD_PARTY.md /out/usr/share/doc/dozorcam/
-# Точки монтирования: state — том, buffer/spool и /run/cctv — tmpfs (compose.yml).
+# Точки монтирования: state — том, buffer/spool и /run/cctv — tmpfs (compose.yml),
+# buffer-disk — том буфера на диске (владелец переходит в пустой том при первом монтировании).
 RUN install -d -m 0700 /out/var/lib/cctv/state /out/var/lib/cctv/buffer /out/var/lib/cctv/spool \
-        /out/run/cctv \
+        /out/var/lib/cctv/buffer-disk /out/run/cctv \
  && install -d -m 0755 /out/etc/cctv \
  && chmod 0755 /out/app/scripts/retention-guard.sh \
  && chmod 0644 /out/usr/share/cctv/models/yolox_tiny.onnx

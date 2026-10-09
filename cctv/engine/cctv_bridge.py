@@ -65,6 +65,16 @@ DISCOVERY_NETWORKS = os.environ.get("CCTV_DISCOVERY_NETWORKS", "")
 STORAGE_BUDGET_BYTES = int(os.environ.get("CCTV_STORAGE_BUDGET_BYTES", str(8 * 1024 ** 3)))
 MIN_FREE_BYTES = int(os.environ.get("CCTV_MIN_FREE_BYTES") or str(4 * 1024 ** 3))
 CLIP_SECONDS = 30
+# Сегмент в клип — только закрытый, по тому же правилу, что у детектора
+# (cctv_pipeline._ready_segments): новейший по имени ffmpeg ещё пишет, остальные
+# закрыты появлением следующего, выдержка — от гонки на дозакрытии. Клип движения
+# собирался через 15 с после события, хвост окна ±15 с попадал в открытый сегмент,
+# и последний кадр клипа выходил рваным («Invalid level prefix» у ffmpeg) — 2 клипа
+# из 3 на стенде LXD 09.10.2026, одинаково при буфере в RAM и на диске.
+CLIP_SEGMENT_SETTLE_SEC = float(os.environ.get("CCTV_RECORDED_SEGMENT_SETTLE_SEC", "1"))
+# Клип движения ждёт, пока закроется сегмент с концом окна: 15 с окна после
+# события + сегмент рекордера (5 с) + выдержка.
+MOTION_CLIP_DELAY_SEC = 15 + 5 + CLIP_SEGMENT_SETTLE_SEC
 # Свежесть новейшего сегмента для статуса online: два интервала записи с запасом.
 SEGMENT_FRESH_SEC = 30
 ERROR_STATUS = {"camera_offline": 503, "not_found": 404, "unavailable": 503,
@@ -736,16 +746,27 @@ class Bridge:
         return self.provision({"command": "upsert", "camera": entry})
 
     def update_camera(self, camera_id: str, request: dict) -> dict:
-        """Правка существующей записи: новые пароль/потоки или флаги детекции."""
+        """Правка существующей записи: новые пароль/потоки или флаги детекции.
+
+        Писарю уходит только то, что меняется: запись он правит на месте, с диска.
+        Собирать её здесь нельзя — `self.cameras` хранит рабочие адреса RTSP-прокси
+        (`rtsp://127.0.0.1:…/<id>`, без учётки), и такая запись клала весь движок
+        (аудит 09.10, Б-13). Флаги, которых мост не трогает (ONVIF-гейт, substream),
+        писарь сохраняет сам (Б-14).
+        """
         if camera_id not in self.cameras:
             raise BridgeError("not_found")
         entry: dict = {"camera_id": camera_id}
+        command: dict = {"command": "upsert", "camera": entry}
         if request.get("probe_token"):
             entry.update(self._take_probe(request.get("probe_token")))
+            # Смена логина и пароля: пути потоков в записи остаются прежними.
+            command["keep_paths"] = True
         for key in ("title", "site"):
             if isinstance(request.get(key), str) and request[key].strip():
                 entry[key] = request[key].strip()
         if isinstance(request.get("person_detection"), bool):
+            # false писарь понимает как снятие ключа: детекция выключена.
             entry["person_detection"] = request["person_detection"]
         if request.get("motion_threshold") is not None:
             entry["motion_threshold"] = request["motion_threshold"]
@@ -755,25 +776,7 @@ class Bridge:
             entry["snapshot_aspect"] = request["snapshot_aspect"]
         if set(entry) == {"camera_id"}:
             return writer_error("nothing_to_change")
-        # Отключение детекции людей — снятие ключа, а писарь сливает записи:
-        # поэтому False передаём как явную замену всей записи.
-        if entry.get("person_detection") is False:
-            current = self.cameras[camera_id]
-            base = {"camera_id": camera_id, "title": current.title, "site": current.site,
-                    "rtsp_url": current.rtsp_url}
-            for key, value in (("detect_rtsp_url", current.detect_rtsp_url),
-                               ("snapshot_url", current.snapshot_url),
-                               ("snapshot_user", current.snapshot_user),
-                               ("snapshot_password", current.snapshot_password),
-                               ("motion_threshold", current.motion_threshold),
-                               ("person_gate_threshold", current.person_gate_threshold),
-                               ("snapshot_aspect", current.snapshot_aspect)):
-                if value is not None:
-                    base[key] = value
-            base.update({k: v for k, v in entry.items() if k != "person_detection"})
-            base.pop("person_detection", None)
-            return self.provision({"command": "upsert", "camera": base, "replace": True})
-        return self.provision({"command": "upsert", "camera": entry})
+        return self.provision(command)
 
     def delete_camera(self, camera_id: str) -> dict:
         if camera_id not in self.cameras:
@@ -876,7 +879,9 @@ class Bridge:
             raise BridgeError("unavailable")
         parts = []
         camera_dir = self.buffer_dir / camera.camera_id
-        for entry in sorted(camera_dir.glob("*.ts")):
+        segments = sorted(camera_dir.glob("*.ts"))
+        settled = time.time() - CLIP_SEGMENT_SETTLE_SEC
+        for entry in segments[:-1]:  # новейший пишется прямо сейчас
             try:
                 stamp = parse_time(entry.stem)
             except ValueError:
@@ -891,7 +896,8 @@ class Bridge:
             # возвращает unavailable вместо видео. Воспроизведено 01.09.2026:
             # один из четырёх запросов клипа в рантайме приходил отказом.
             try:
-                if entry.stat().st_size == 0:
+                info = entry.stat()
+                if info.st_size == 0 or info.st_mtime > settled:
                     continue
             except OSError:
                 continue
@@ -1047,8 +1053,8 @@ class Bridge:
             return
 
     def _motion_clip(self, camera: Camera, event_id: str, occurred_at: str, record_path: pathlib.Path) -> None:
-        """Attach a clip only after its post-window exists; the motion event stays valid without it."""
-        time.sleep(15)
+        """Attach a clip only after its post-window is recorded and closed; the motion event stays valid without it."""
+        time.sleep(MOTION_CLIP_DELAY_SEC)
         try:
             body, captured_at = self.clip(camera, occurred_at)
             if len(body) > self.max_clip: raise BridgeError("media_too_large")

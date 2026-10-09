@@ -9,7 +9,7 @@ Start with the [README](../README.md) · Начните с [README](../README.ru
 | Hardware sizing: per-camera numbers, how they were measured, what will not run | [sizing.md](sizing.md) | [sizing.ru.md](sizing.ru.md) |
 | Cameras: RTSP paths by brand, checked cameras | [cameras.md](cameras.md) | [cameras.ru.md](cameras.ru.md) |
 | Person detector models, thresholds, your own weights, bench | [models.md](models.md) | — |
-| Changelog | [CHANGELOG.md](../CHANGELOG.md) | — |
+| Changelog | [CHANGELOG.md](../CHANGELOG.md) | [CHANGELOG.ru.md](../CHANGELOG.ru.md) (с 0.3.1) |
 | Website (en, ru) with the hardware calculator | [egorchenkov.github.io/dozorcam](https://egorchenkov.github.io/dozorcam/) | [egorchenkov.github.io/dozorcam/ru](https://egorchenkov.github.io/dozorcam/ru/) |
 
 Design notes (Russian only) · Заметки об устройстве:

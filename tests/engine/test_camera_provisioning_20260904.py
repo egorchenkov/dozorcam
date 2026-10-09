@@ -146,14 +146,23 @@ class ProvisionRegistry(unittest.TestCase):
 
     def test_snapshot_and_detect_stream_must_belong_to_the_same_camera(self) -> None:
         with self.assertRaises(provision.Invalid):
-            provision.validate({"camera_id": "cam", "rtsp_url": "rtsp://192.0.2.10:554/a",
-                                "detect_rtsp_url": "rtsp://192.0.2.11:554/b"})
+            provision.validate({"camera_id": "cam", "rtsp_url": "rtsp://u:p@192.0.2.10:554/a",
+                                "detect_rtsp_url": "rtsp://u:p@192.0.2.11:554/b"})
         with self.assertRaises(provision.Invalid):
-            provision.validate({"camera_id": "cam", "rtsp_url": "rtsp://192.0.2.10:554/a",
+            provision.validate({"camera_id": "cam", "rtsp_url": "rtsp://u:p@192.0.2.10:554/a",
                                 "snapshot_url": "http://192.0.2.11/snap"})
 
+    def test_stream_without_credentials_is_refused(self) -> None:
+        """RTSP-прокси движка без учётки не стартует, и с ним стоит вся цепочка."""
+        for camera in ({"camera_id": "cam", "rtsp_url": "rtsp://192.0.2.10:554/a"},
+                       {"camera_id": "cam", "rtsp_url": "rtsp://u:p@192.0.2.10:554/a",
+                        "detect_rtsp_url": "rtsp://192.0.2.10:554/b"}):
+            with self.assertRaises(provision.Invalid) as caught:
+                provision.validate(camera)
+            self.assertEqual("registry.no_credentials", caught.exception.reply()["error_key"])
+
     def test_unknown_fields_do_not_reach_the_registry(self) -> None:
-        entry = provision.validate({"camera_id": "cam", "rtsp_url": "rtsp://192.0.2.10:554/a",
+        entry = provision.validate({"camera_id": "cam", "rtsp_url": "rtsp://u:p@192.0.2.10:554/a",
                                     "command": "rm -rf /", "extra": {"x": 1}})
         self.assertEqual({"camera_id", "title", "site", "rtsp_url"}, set(entry))
 
@@ -185,7 +194,7 @@ class ProvisionRegistry(unittest.TestCase):
 
     def test_every_change_leaves_a_backup(self) -> None:
         self.apply({"command": "upsert", "camera": {
-            "camera_id": "dvor", "rtsp_url": "rtsp://192.0.2.11:554/live"}})
+            "camera_id": "dvor", "rtsp_url": "rtsp://u:p@192.0.2.11:554/live"}})
         self.assertEqual(1, len(list(self.backups.glob("cameras.*.json"))))
 
     def test_listing_never_returns_passwords(self) -> None:
@@ -308,13 +317,12 @@ class BridgeProvisioningApi(unittest.TestCase):
         with self.assertRaises(self.module.BridgeError):
             self.bridge.delete_camera("нет-такой")
 
-    def test_turning_person_detection_off_replaces_the_whole_entry(self) -> None:
-        """Писарь сливает записи, поэтому снятие флага идёт явной заменой."""
+    def test_turning_person_detection_off_sends_only_the_flag(self) -> None:
+        """Снятие флага — правка одного поля: запись из рабочих адресов моста
+        (адреса RTSP-прокси) писарю не уходит (аудит 09.10.2026, Б-13)."""
         self.bridge.update_camera("city", {"person_detection": False})
-        command = self.sent[-1]
-        self.assertTrue(command["replace"])
-        self.assertNotIn("person_detection", command["camera"])
-        self.assertEqual("rtsp://admin:old@192.0.2.10:554/live", command["camera"]["rtsp_url"])
+        self.assertEqual({"command": "upsert", "camera": {"camera_id": "city", "person_detection": False}},
+                         self.sent[-1])
 
     def test_scan_rejects_networks_outside_the_private_range(self) -> None:
         result = self.bridge.start_scan("8.8.8.0/24")

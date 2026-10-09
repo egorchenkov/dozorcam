@@ -47,20 +47,28 @@ previous mode is kept.
   "+N within a minute · latest 13:01:40"; the clip button is around the fresh frame. The window
   counts from the first post, so a busy camera still gets one post a minute.
   `CCTV_EVENT_MERGE_SEC` (`event_merge_sec`), `0` — every event separately.
-- **Requested frames and clips** go to whoever asked; notification sound follows each
-  person's own subscription (🔔 on the card).
+- **Private chat copies.** Independently of the mode, everyone allowed can get a camera's
+  events in their private chat: "📩 To my DM" on the camera card (or the topic keyboard).
+  The group feed stays silent, the private copy comes with sound; the card line says how many
+  people get it (in the group) or whether you do (in your private chat). Without a group the
+  private chat is the feed itself and the same button switches its sound. The bot can only
+  write to people who pressed Start in its private chat.
+- **Motion clips** arrive as a reply to the event post in every place, with that place's
+  sound; a clip of an event merged into a post is silent. A "person" after "motion" within the
+  merge window is a new post where it rings, not a silent edit.
+- **Requested frames and clips** go to whoever asked, into the same topic or chat.
 
 ## Camera map and camera card
 
 One pinned message per place: the "Control" topic, the group itself in the flat mode, or a
 private chat of each person without a group. It shows "📍 Cameras: 4 · online: 4 · events
-today: 12", cameras in sections by location, 🔕 for cameras without notifications, a button
+today: 12", cameras in sections by location, in a private chat 📩 (or 🔕 without a group) for your own subscription, a button
 per camera, ➕ Add camera, 🧠 Detector model, 🎯 Thresholds, 🔀 Where events go, and
 "⬆️ Version X is available" when there is one. With more than 12 cameras in several
 locations the buttons go by location pages.
 
 Tap a camera and the same message turns into its **card**: status, location and hashtags,
-📷 Frame, 🎞 Clip 30 s, 🔄 Status, 🔔 notifications, ⏸ Pause, ✏️ Name, 📍 Location,
+📷 Frame, 🎞 Clip 30 s, 🔄 Status, 📩 To my DM, ⏸ Pause, ✏️ Name, 📍 Location,
 ⚙️ Settings, 🗑 Retire and "◀ To the map"; a card left open returns to the map after 10
 minutes. The pinned panel of a camera topic is the same card. `/cam <name>` sends a card as a
 message (by name, `#hashtag` or camera id; in a camera topic without a name — that camera).
@@ -163,7 +171,8 @@ After editing `.env` run `dozorcam restart` (re-creates the containers).
 | `CCTV_DISCOVERY_NETWORKS` | own /24 networks | where `/add` looks, e.g. `192.0.2.0/24,198.51.100.0/24` |
 | `CCTV_CHAT_ID`, `CCTV_ALLOWED_USER_IDS`, `CCTV_OWNER_IDS` | wizard | fixed group and people instead of the wizard |
 | `CCTV_TELEGRAM_API` | `api.telegram.org` | your own Bot API server |
-| `CCTV_BUFFER_TMPFS` | installer: 25 % RAM, 512 MB–4 GB | RAM for the video buffer of all cameras |
+| `CCTV_BUFFER_TMPFS` | installer: 370 MB × the cameras that fit into RAM whole (85 % of RAM with processes), at least 512 MB; `64m` with the buffer on disk | RAM for the video buffer of all cameras (a ceiling: RAM is used by recorded segments only) |
+| `CCTV_BUFFER_DIR`, `CCTV_BUFFER_DISK` | `/var/lib/cctv/buffer` (tmpfs); installer `DOZORCAM_BUFFER=disk`: `/var/lib/cctv/buffer-disk` | the buffer on disk when RAM is short: the volume `engine-buffer` or a host directory `CCTV_BUFFER_DISK` owned by uid 10001; SSD only (~0.5 MB/s of writes per camera) |
 | `CCTV_BUFFER_MAX_BYTES` | 400 MiB, installer: 200 MiB | buffer limit per stream (main and detector); all cameras must fit into `CCTV_BUFFER_TMPFS` — the engine has no common limit |
 | `CCTV_SPOOL_TMPFS`, `CCTV_STORAGE_BUDGET_BYTES` | 512m, buffer + spool | engine transit and the storage budget |
 | `CCTV_BRIDGE_PORT`, `CCTV_EVENTS_PORT`, `CCTV_RTSP_PROXY_PORT` | 8780, 8781, 28554 | host ports; a second install next to it needs others |
@@ -174,6 +183,7 @@ After editing `.env` run `dozorcam restart` (re-creates the containers).
 | `/etc/cctv` (read-only) | `config.toml`, `cameras.json`, `secrets.toml`, `models/` | `CCTV_CONFIG_DIR` |
 | `/var/lib/cctv/state` (volumes `engine-state`, `bot-state`) | kilobytes: camera registry, detector heartbeat, bot SQLite | `CCTV_STATE_DIR` |
 | `/var/lib/cctv/buffer` (tmpfs) | 10 minutes of segments per stream | `CCTV_BUFFER_DIR` |
+| `/var/lib/cctv/buffer-disk` (volume `engine-buffer` or `CCTV_BUFFER_DISK`) | the same buffer on disk, empty while the buffer is in RAM; not backed up | `CCTV_BUFFER_DIR=/var/lib/cctv/buffer-disk` |
 
 The registry built from the chat is written by the engine to `state/cameras.json`; the
 `cameras.json` of the config directory only seeds an empty state. Editing the config

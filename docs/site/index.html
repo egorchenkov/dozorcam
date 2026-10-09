@@ -28,7 +28,7 @@
 <div class="wrap">
 <section class="hero" style="padding-top:48px">
   <div>
-    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Release <b><!--site:version-->0.3.0<!--/site--></b> · install in one command, no forum group needed →</a>
+    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Release <b><!--site:version-->0.3.1<!--/site--></b> · install in one command, no forum group needed →</a>
     <h1>Your cameras, your Telegram, no cloud</h1>
     <p class="lead">Dozorcam watches IP cameras on your own Linux box, recognises <b>people</b> — not leaves,
     shadows or the cat — and sends a snapshot with the person boxed and a clip of the moment to Telegram:
@@ -89,7 +89,7 @@
     <li><b>5 · Telegram</b>Snapshot with a box where events go; clip on a tap.</li>
   </ol>
   <div class="grid c3" style="margin-top:22px">
-    <div class="card new"><h3>New in <!--site:version-->0.3.0<!--/site-->: install in one command</h3><p>One line installs Docker if needed, checks the release files, asks for the bot token and prints a link with a QR code. <code>dozorcam update</code>, <code>backup</code>, <code>restore</code>, <code>uninstall</code> look after the rest.</p></div>
+    <div class="card new"><h3>New in <!--site:version-->0.3.1<!--/site-->: the group and your DM at once</h3><p>Every event goes to the group and, for whoever pressed <b>📩 To my DM</b> on a camera card, to the private chat too — in every mode. Clips answer their event post; changing a camera from the chat no longer stops the others. Less RAM for 3–8 cameras, and the video buffer can live on an SSD.</p></div>
     <div class="card new"><h3>Events where you want them</h3><p>No forum group needed any more: start in your private chat with one tap, move to a group or topics later. The setup wizard pins its progress and checks the group by itself.</p></div>
     <div class="card new"><h3>A map instead of a panel</h3><p>A pinned camera map with cards, merged events, hashtags, <code>/invite</code> for one more person, times in your time zone. <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Full changelog</a></p></div>
   </div>
@@ -102,7 +102,7 @@
   <div class="grid c3" style="margin-top:16px">
     <div class="card"><h3>Docker included</h3><p>No Docker or compose plugin — the installer offers the official <code>get.docker.com</code> script (y/N).</p></div>
     <div class="card"><h3>Checked files</h3><p>The release files go to <code>~/dozorcam</code> and are checked against the release <code>SHA256SUMS</code>; the image is pinned by digest.</p></div>
-    <div class="card"><h3>Sized for your box</h3><p>The token is checked with Telegram, language and time zone come from the host, the RAM buffer from the machine memory.</p></div>
+    <div class="card"><h3>Sized for your box</h3><p>The token is checked with Telegram, language and time zone come from the host, the RAM buffer from the machine memory; short of RAM — the buffer on an SSD with <code>DOZORCAM_BUFFER=disk</code>.</p></div>
   </div>
   <p class="note">It ends with a link <code>t.me/&lt;your bot&gt;?start=&lt;code&gt;</code> and a QR code. Prefer to do it by hand?
   <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/install.md#manual-install-with-docker-compose">Manual install with docker compose</a> ·
@@ -250,18 +250,23 @@ dozorcam restore &lt;file&gt;</code></pre><p>One file with settings, the camera 
           <option value="x86">x86-64 desktop or server CPU, 2020 or newer</option>
           <option value="a72">ARM64, older: Raspberry Pi 4</option>
         </select></label>
+      <label>Video buffer
+        <select id="c-buf">
+          <option value="ram" selected>In RAM (default, preferred)</option>
+          <option value="ssd">On an SSD (when RAM is short)</option>
+        </select></label>
     </form>
     <div class="calc-out" aria-live="polite">
       <div class="res"><span>RAM</span><b id="r-ram">4 GB</b><small id="r-ram-d"></small></div>
       <div class="res"><span>CPU</span><b id="r-cpu">4 cores</b><small id="r-cpu-d"></small></div>
-      <div class="res"><span>Disk</span><b>2 GB</b><small>the image ~0.8 GB plus updates; video stays in RAM</small></div>
+      <div class="res"><span>Disk</span><b id="r-disk">2 GB</b><small id="r-disk-d">the image ~0.8 GB plus updates; video stays in RAM</small></div>
       <p class="pick" id="r-pick"></p>
       <p class="warn" id="r-warn" hidden></p>
     </div>
   </div>
-  <noscript><p class="note">The calculator needs JavaScript. Rule of thumb: 1–2 cameras — 2 GB RAM and 2 cores, 3–4 — 4 GB and 4 cores, 5–8 — 8 GB and 4 cores.</p></noscript>
+  <noscript><p class="note">The calculator needs JavaScript. Rule of thumb for 2 MP cameras: 1–2 — 2 GB RAM and 2 cores, 3–4 — 4 GB and 2 cores, 5–8 — 4–6 GB and 4 cores, 9–16 — 8–16 GB and 6–8 cores; with the video buffer on an SSD RAM drops to 2 GB up to 6 cameras and 4 GB up to 16.</p></noscript>
   <div class="grid c2" style="margin-top:18px">
-    <div class="card"><h3>Measured, not guessed</h3><p>A live installation with 4 cameras on an ARM server (Neoverse-N1): about 0.5 core on average, the engine 1.6 GB with a 2 GB RAM buffer, the bot 66 MB, the image 800 MB. Plus a bench with 1–8 synthetic cameras under fixed CPU and memory limits on arm64 and amd64 — <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/sizing.md">method and numbers</a>.</p></div>
+    <div class="card"><h3>Measured, not guessed</h3><p>A live installation with 4 cameras on an ARM server (Neoverse-N1): 0.76 core on average over 7.5 hours, engine processes 0.77 GB plus the video buffer, the bot 0.1 GB, the image 800 MB. Plus a bench with 1–8 synthetic cameras under fixed CPU and memory limits on arm64 and amd64, with the buffer in RAM and on disk — <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/sizing.md">method and numbers</a>.</p></div>
     <div class="card"><h3>What will not run</h3><p>Boards with 1 GB RAM (Raspberry Pi 3, Zero 2): the system, Docker, the detector and even one camera's buffer do not fit. 32-bit ARM (armv7, older NAS) — there is no image. Pi 4 numbers are an estimate (about twice slower per core than the measured ARM).</p></div>
   </div>
 </section>
@@ -291,11 +296,10 @@ dozorcam restore &lt;file&gt;</code></pre><p>One file with settings, the camera 
   <div class="platform">
     <div class="mark" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="24" cy="10" r="5"/><circle cx="10" cy="36" r="5"/><circle cx="38" cy="36" r="5"/><path d="M21 14.5 13 31.5M27 14.5l8 17M15 36h18"/><circle cx="24" cy="27" r="3" fill="#fff" stroke="none"/></svg></div>
     <div>
-      <div class="kicker">Built on a platform</div>
-      <h2><!--site:platform.en-->Artel<!--/site--> — a universal platform for building apps through Telegram bots</h2>
-      <p>Dozorcam is built with <!--site:platform.en-->Artel<!--/site-->, a universal platform for building applications through
-      Telegram bots, developed by Roman Egorchenkov. The platform's source code will be published on GitHub soon —
-      follow the updates in his repositories.</p>
+      <div class="kicker">The platform</div>
+      <h2>Built on <!--site:platform.en-->a general-purpose platform for building applications and AI agents through Telegram bots<!--/site--></h2>
+      <p>Dozorcam is built on <!--site:platform.en-->a general-purpose platform for building applications and AI agents through Telegram bots<!--/site-->, developed by Roman Egorchenkov.
+      The platform's source code will be published on GitHub soon — follow the updates in his repositories.</p>
       <a class="btn" href="https://github.com/egorchenkov">github.com/egorchenkov</a>
     </div>
   </div>
@@ -314,7 +318,7 @@ dozorcam restore &lt;file&gt;</code></pre><p>One file with settings, the camera 
 
 <footer>
   <div class="wrap">
-    <span>Dozorcam <!--site:version-->0.3.0<!--/site--></span>
+    <span>Dozorcam <!--site:version-->0.3.1<!--/site--></span>
     <a href="https://github.com/egorchenkov/dozorcam/releases">Releases</a>
     <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Changelog</a>
     <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/README.md">Documentation</a>
@@ -326,16 +330,21 @@ dozorcam restore &lt;file&gt;</code></pre><p>One file with settings, the camera 
 <script>
 var CALC_TEXT = {
   gb: " GB", cores: function (n) { return n + (n === 1 ? " core" : " cores"); },
-  ramD: "used ≈ {use} GB: video buffer {buf} GB ({min} min per camera), engine {eng} GB, bot and system {sys} GB",
-  cpuD: "average ≈ {avg} core, all cameras busy at once ≈ {peak} — above that the detector queues, events come later",
-  tmpfs: "Manual install: CCTV_BUFFER_TMPFS={tmpfs}m and CCTV_BUFFER_MAX_BYTES={cap} in .env (the installer sets both).",
+  over: "more than 32 GB",
+  ramD: "used ≈ {use} GB at most: video buffer {buf} GB ({min} min per camera), engine {eng} GB, bot and system {sys} GB",
+  ramSsd: "used ≈ {use} GB: engine {eng} GB, bot and system {sys} GB; the video buffer is on the SSD",
+  ssdHint: "With the buffer on an SSD — {gb} GB",
+  tmpfs: "Manual install: CCTV_BUFFER_TMPFS={tmpfs}m and CCTV_BUFFER_MAX_BYTES={cap} in .env (the installer sets both)",
+  cpuD: "average ≈ {avg} core — at most half of the cores; all cameras busy at once ≈ {peak}: above the cores the detector queues, events come later",
+  diskRam: "the image ~0.8 GB plus updates; video stays in RAM",
+  diskSsd: "SSD: image and updates plus the buffer {buf} GB; writes ≈ {rate} MB/s nonstop, ≈ {tb} TB a year — compare with the TBW of your SSD. Not an HDD or an SD card",
   pick: { 2: "Raspberry Pi 4/5 (2 GB+), Orange Pi 5, any mini PC", 4: "Raspberry Pi 5 (4–8 GB), an Intel N100 mini PC",
           8: "Intel N100/N305 mini PC with 8 GB, a home server", 16: "a home server or a NAS with 16 GB (amd64/arm64)",
           32: "a server with 32 GB — or split cameras between two installations" },
   example: "Fits, for example: ",
   slow: "Pi 4 numbers are an estimate: its cores are about twice slower than the measured ARM.",
   lag: "So many busy scenes keep the detector queue full: events will come late. Use the camera's own person detection or split the cameras between two installations.",
-  est: "Mini PC numbers are an estimate: counted like the measured ARM server, which is on the safe side for an N100.",
+  est: "Mini PC numbers are an estimate: an N100 core counted like one vCPU of the measured x86 server, the person model a bit slower (no AVX-512).",
   split: "More than 16 GB: better split the cameras between two installations."
 };
 </script>

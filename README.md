@@ -7,7 +7,7 @@ recording buffer from your IP cameras, looks for people (motion gate → YOLO) a
 snapshots and clips to Telegram: to your private chat, a group, or a forum group with a
 topic per camera or per location. No cloud: video lives in the node's RAM and in your chat.
 
-Current release: **<!--site:version-->0.3.0<!--/site-->** ·
+Current release: **<!--site:version-->0.3.1<!--/site-->** ·
 [Changelog](CHANGELOG.md) · [Releases](https://github.com/egorchenkov/dozorcam/releases)
 
 > Provided **as is** (see [CONTRIBUTING](CONTRIBUTING.md)): a one-person home project,
@@ -126,13 +126,13 @@ Development: `python3.12 -m venv .venv && .venv/bin/pip install -r requirements-
 .venv/bin/pip install -e . --no-deps && .venv/bin/python -m pytest -q` —
 [docs/reference.md](docs/reference.md#development).
 
-## Built on <!--site:platform.en-->Artel<!--/site-->
+## Built on a general-purpose platform
 
-> **🧩 <!--site:platform.en-->Artel<!--/site--> — a universal platform for building apps through Telegram bots**
+> **🧩 Built on <!--site:platform.en-->a general-purpose platform for building applications and AI agents through Telegram bots<!--/site-->**
 >
-> Dozorcam is built with <!--site:platform.en-->Artel<!--/site-->, a universal platform for building applications
-> through Telegram bots, developed by Roman Egorchenkov. The platform's source code will be
-> published on GitHub soon — follow the updates in his repositories:
+> Dozorcam is built on <!--site:platform.en-->a general-purpose platform for building applications and AI agents through Telegram bots<!--/site-->, developed by
+> Roman Egorchenkov. The platform's source code will be published on GitHub soon — follow the
+> updates in his repositories:
 > [github.com/egorchenkov](https://github.com/egorchenkov).
 
 ## License

@@ -36,8 +36,11 @@ curl -fsSL https://egorchenkov.github.io/dozorcam/install.sh | sh
    релиза в `~/dozorcam` (git не нужен) и сверяет их с `SHA256SUMS` релиза.
 3. Спрашивает токен бота и проверяет его в Telegram (`getMe`).
 4. Язык берёт из `$LANG` (`CCTV_LANG`), часовой пояс — с хоста (`CCTV_TZ`).
-5. Подбирает буфер видео в RAM по памяти машины: 25 % RAM в пределах 512 МБ–4 ГБ;
-   предупреждает, если RAM меньше 2 ГБ.
+5. Подбирает буфер видео по памяти машины: на столько камер, сколько целиком помещается в RAM
+   (процессы и буфер — в пределах 85 % RAM, около 0,46 ГБ на камеру 2 Мп), и говорит, сколько это;
+   предупреждает, если RAM меньше 2 ГБ. С `DOZORCAM_BUFFER=disk` буфер уходит на SSD, а в RAM
+   остаются только процессы — на той же памяти помещается больше камер
+   ([sizing.ru.md](sizing.ru.md#буфер-в-ram-или-на-ssd)).
 6. Закрепляет образ по digest, запускает, ждёт healthcheck и печатает ссылку владельца
    `https://t.me/<бот>?start=<код>` с QR-кодом.
 
@@ -52,6 +55,8 @@ curl -fsSL https://egorchenkov.github.io/dozorcam/install.sh | sh
 | `DOZORCAM_DIR` | каталог установки, по умолчанию `~/dozorcam` |
 | `DOZORCAM_VERSION` | релиз, по умолчанию последний |
 | `DOZORCAM_INSTALL_DOCKER=1` | поставить Docker без вопроса |
+| `DOZORCAM_BUFFER` | `ram` (по умолчанию) или `disk` — буфер видео на SSD, когда RAM мало |
+| `DOZORCAM_BUFFER_PATH` | каталог хоста для буфера на диске (например, отдельный SSD), иначе том Docker |
 
 ```bash
 curl -fsSL https://egorchenkov.github.io/dozorcam/install.sh | DOZORCAM_TOKEN=<токен> DOZORCAM_TZ=Europe/Moscow sh

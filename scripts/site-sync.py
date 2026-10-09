@@ -20,12 +20,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MARK = re.compile(r"<!--site:([\w.]+)-->(.*?)<!--/site-->", re.S)
+RU_CHANGELOG_SINCE = (0, 3, 1)  # с этой версии у релиза раздел и в CHANGELOG.ru.md
 # Файл → ключи, которые в нём обязаны встретиться хотя бы раз (иначе проверка пуста).
 FILES = {
     "docs/site/index.html": {"version", "platform.en"},
-    "docs/site/ru/index.html": {"version", "platform.ru", "platform.ru_in"},
+    "docs/site/ru/index.html": {"version", "platform.ru_in"},
     "README.md": {"version", "platform.en"},
-    "README.ru.md": {"version", "platform.ru", "platform.ru_in"},
+    "README.ru.md": {"version", "platform.ru_in"},
 }
 
 
@@ -84,6 +85,11 @@ def main():
     if re.fullmatch(r"\d+\.\d+\.\d+", ver):
         if not re.search(rf"^## \[{re.escape(ver)}\]", (root / "CHANGELOG.md").read_text(), re.M):
             problems.append(f"CHANGELOG.md: no '## [{ver}]' section")
+        # Русский список изменений ведётся с 0.3.1 — у релиза раздел и там (CHANGELOG.ru.md).
+        ru = root / "CHANGELOG.ru.md"
+        if ru.exists() and tuple(map(int, ver.split("."))) >= RU_CHANGELOG_SINCE \
+                and not re.search(rf"^## \[{re.escape(ver)}\]", ru.read_text(), re.M):
+            problems.append(f"CHANGELOG.ru.md: no '## [{ver}]' section")
 
     if args.check:
         if problems:

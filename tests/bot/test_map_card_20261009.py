@@ -457,7 +457,8 @@ class FlatPrivateMapTest(MapCardContract, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("🔕", line(FRIEND))
         # В карточке — уведомления этого человека.
         await self.press(Dest(FRIEND), self.home(Dest(FRIEND)).message_id, "Калитка", user=FRIEND)
-        self.assertIn("🔔 включены", self.message(FRIEND, self.home(Dest(FRIEND)).message_id)["text"])
+        self.assertIn(self.bot._t("panel.sound_on"),
+                      self.message(FRIEND, self.home(Dest(FRIEND)).message_id)["text"])
 
 
 class ModeTest(Harness, unittest.IsolatedAsyncioTestCase):

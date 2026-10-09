@@ -91,7 +91,9 @@ class ProvisioningTest(unittest.IsolatedAsyncioTestCase):
             if path.startswith("/v1/discovery/scans/"):
                 return httpx.Response(200, json=self.scan_status)
             if path == "/v1/discovery/probes":
-                return httpx.Response(200, json=self.probe_reply)
+                reply = (self.probe_reply.pop(0) if isinstance(self.probe_reply, list)
+                         else self.probe_reply)
+                return httpx.Response(200, json=reply)
             if path == "/v1/cameras" and request.method == "POST":
                 return httpx.Response(200, json=self.add_reply)
             if path.endswith("/config") and request.method == "GET":
@@ -252,15 +254,75 @@ class ProvisioningTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"probe_token": "tok-1"}, update)
         self.assertNotIn(PASSWORD, self.texts())
 
+    async def test_password_change_of_a_camera_added_by_stream_address(self) -> None:
+        """Камера вне поиска (заведена адресом потока): по IP поток не находится, и
+        «🔑 Логин и пароль» отказывала «не удалось определить поток» (стенд 09.10).
+        Теперь пароль проверяется на записанных адресах потоков — без учётки."""
+        self.probe_reply = [
+            {"ok": False, "error_key": "discovery.no_stream", "error": "no stream"},
+            {"ok": True, "probe_token": "tok-2", "summary": SUMMARY}]
+        await self.bot.ensure_topic("city", "Город", "Город")
+        topic = self.state.topic_for("city")
+        await self.bot.on_callback(OWNER, topic.thread_id,
+                                   self.button("city", "cand", "192.0.2.10"))
+        answer = await self.bot.on_text(OWNER, topic.thread_id, f"admin {PASSWORD}", None, 9)
+        self.assertIn("обновлены", answer)
+        probes = [body for path, body in self.sent if path == "/v1/discovery/probes"]
+        self.assertEqual("192.0.2.10", probes[0]["host"])
+        self.assertEqual({"host": "rtsp://192.0.2.10:554/Streaming/Channels/101",
+                          "detect_url": "rtsp://192.0.2.10:554/Streaming/Channels/102",
+                          "username": "admin", "password": PASSWORD}, probes[1])
+        update = next(body for path, body in self.sent
+                      if path.endswith("/config") and body.get("probe_token"))
+        self.assertEqual({"probe_token": "tok-2"}, update)
+        self.assertNotIn(PASSWORD, self.texts())
+
+    async def test_wrong_password_is_not_retried_by_stream_address(self) -> None:
+        self.probe_reply = {"ok": False, "error_key": "discovery.auth_failed", "error": "auth"}
+        await self.bot.ensure_topic("city", "Город", "Город")
+        topic = self.state.topic_for("city")
+        await self.bot.on_callback(OWNER, topic.thread_id,
+                                   self.button("city", "cand", "192.0.2.10"))
+        await self.bot.on_text(OWNER, topic.thread_id, f"admin {PASSWORD}", None, 9)
+        self.assertEqual(1, len([p for p, _ in self.sent if p == "/v1/discovery/probes"]))
+
+    def _detect_buttons(self, markup) -> list[str]:
+        return [b.text for row in markup.inline_keyboard for b in row
+                if b.callback_data.startswith("cv:detect:")]
+
     async def test_detection_toggle_goes_to_the_registry(self) -> None:
+        """Включение — в реестр, и карточка настройки перерисовывается на месте:
+        на ней уже кнопка выключения, а не прежняя (аудит 09.10.2026, Б-12)."""
+        self.config_reply["camera"]["person_detection"] = False
         await self.bot.ensure_topic("city", "Город", "Город")
         topic = self.state.topic_for("city")
         answer = await self.bot.on_callback(OWNER, topic.thread_id,
-                                            self.button("city", "detect", "0"))
+                                            self.button("city", "detect", "1"), message_id=777)
+        self.assertIn("включена", answer)
+        update = next(body for path, body in self.sent
+                      if path.endswith("/config") and "person_detection" in body)
+        self.assertEqual({"person_detection": True}, update)
+        card = next(e for e in self.tg.of("edit_message_text") if e["message_id"] == 777)
+        self.assertIn("Детекция людей: включена", card["text"])
+        self.assertEqual(["👤 Детекция людей: выключить"], self._detect_buttons(card["reply_markup"]))
+
+    async def test_detection_off_goes_to_the_registry_and_redraws_the_card(self) -> None:
+        """Выключение снова есть (мост правит запись на месте, Б-13 починен в движке):
+        мосту уходит только флаг, карточка перерисовывается с кнопкой включения (Б-12)."""
+        await self.bot.ensure_topic("city", "Город", "Город")
+        topic = self.state.topic_for("city")
+        await self.bot.on_callback(OWNER, topic.thread_id, self.button("city", "setup"))
+        card = self.tg.of("send_message")[-1]
+        self.assertEqual(["👤 Детекция людей: выключить"], self._detect_buttons(card["reply_markup"]))
+        answer = await self.bot.on_callback(OWNER, topic.thread_id,
+                                            self.button("city", "detect", "0"), message_id=778)
         self.assertIn("выключена", answer)
         update = next(body for path, body in self.sent
                       if path.endswith("/config") and "person_detection" in body)
         self.assertEqual({"person_detection": False}, update)
+        redrawn = next(e for e in self.tg.of("edit_message_text") if e["message_id"] == 778)
+        self.assertIn("Детекция людей: выключена", redrawn["text"])
+        self.assertEqual(["👤 Детекция людей: включить"], self._detect_buttons(redrawn["reply_markup"]))
 
     async def test_deletion_needs_the_confirmation_word(self) -> None:
         await self.bot.ensure_topic("city", "Город", "Город")

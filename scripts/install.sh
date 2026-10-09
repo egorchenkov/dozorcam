@@ -7,13 +7,15 @@
 # скачивает из релиза по тегу compose.yml, .env.example и обёртку dozorcam в
 # ~/dozorcam (git не нужен), сверяет их с SHA256SUMS релиза; спрашивает токен бота
 # и проверяет его в Telegram (getMe); язык — из $LANG, часовой пояс — с хоста
-# (CCTV_TZ), лимиты буфера в RAM — по памяти машины; закрепляет образ по digest,
+# (CCTV_TZ), буфер видео — в RAM по памяти машины (или на SSD); закрепляет образ по digest,
 # запускает, ждёт healthcheck и печатает ссылку владельца t.me/<бот>?start=<код> с QR.
 #
 # Без вопросов (CI, автоматизация) — всё переменными:
 #   DOZORCAM_TOKEN=<токен>  DOZORCAM_LANG=en|ru  DOZORCAM_TZ=Europe/Berlin
-#   DOZORCAM_DIR=~/dozorcam  DOZORCAM_VERSION=0.3.0 (иначе последний релиз)
+#   DOZORCAM_DIR=~/dozorcam  DOZORCAM_VERSION=0.3.1 (иначе последний релиз)
 #   DOZORCAM_INSTALL_DOCKER=1 (поставить Docker без вопроса)
+#   DOZORCAM_BUFFER=ram|disk (буфер видео в RAM — по умолчанию — или на SSD, когда RAM мало),
+#   DOZORCAM_BUFFER_PATH=/mnt/ssd/dozorcam (каталог буфера на диске; иначе том Docker)
 # Для стенда и CI: DOZORCAM_DOWNLOAD_URL (каталог с файлами релиза, file:// тоже),
 #   DOZORCAM_IMAGE (свой реестр), DOZORCAM_TELEGRAM_API (свой Bot API или мок),
 #   DOZORCAM_REPO, DOZORCAM_GITHUB_API.
@@ -210,26 +212,83 @@ if [ -d /usr/share/zoneinfo ] && [ ! -f "/usr/share/zoneinfo/$tz" ]; then
 fi
 env_set CCTV_TZ "$tz"
 
-# --- 5. память под буфер видео ------------------------------------------------------
+# --- 5. буфер видео: в RAM (по умолчанию) или на SSD --------------------------------
+# Модель памяти — та же, что у калькулятора на сайте (замеры 09.10.2026, docs/sizing.md):
+# система и Docker ~400 МБ, бот ~100, движок 170 + 150 МБ на камеру; буфер камеры 2 Мп — до
+# ~306 МБ: лимит 200 МБ на основной поток (7 минут при 4 Мбит/с) плюс 130 с потока, которые
+# рекордер дописывает между чистками буфера, и ~44 МБ детекторного. Всё вместе — не больше
+# 85 % RAM, остальное — кэш страниц. Лимит буфера — на поток, общего у движка нет: камеры
+# обязаны поместиться в tmpfs сами, иначе запись встаёт (ENOSPC). tmpfs — только потолок
+# (память занимают записанные сегменты), поэтому он с запасом под камеры до 8 Мбит/с — 370 МБ
+# на камеру. Прежнее «буфер = 25 % RAM» не было нуждой движка: оно требовало 8 ГБ уже на
+# 5 камер и при этом не учитывало дозапись между чистками.
+# Буфер на диске (DOZORCAM_BUFFER=disk, только SSD) снимает с RAM буфер: камер влезает больше,
+# а диск получает непрерывную запись ~0,5 МБ/с на камеру. DOZORCAM_BUFFER_PATH — свой каталог
+# хоста (отдельный SSD), иначе том Docker.
 ram_mb=$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo)
-buffer_mb=$((ram_mb / 4))
-[ "$buffer_mb" -lt 512 ] && buffer_mb=512
-[ "$buffer_mb" -gt 4096 ] && buffer_mb=4096
-spool_mb=512
-[ "$buffer_mb" -lt 1024 ] && spool_mb=256
-# Лимит буфера — на поток, общего лимита у движка нет: камеры обязаны поместиться в tmpfs
-# сами. 200 МБ — это 7 минут основного потока 4 Мбит/с; с детекторным (~36 МБ за 10 минут)
-# камера занимает не больше ~240 МБ, и буфер вмещает buffer_mb/240 камер. Прежние
-# «половина буфера на поток» переполняли tmpfs уже двумя камерами 4 Мбит/с на машине с 2 ГБ
-# (2 × (256 + 36) > 512 МБ) — запись вставала (замер калькулятора железа, 09.10.2026).
+spare_mb=$((ram_mb * 85 / 100 - 670))
 camera_mb=200
-fits=$((buffer_mb / 240))
-say "RAM ${ram_mb} MB: video buffer ${buffer_mb} MB (in RAM, not on disk), enough for about ${fits} cameras of 2 MP." \
-    "RAM ${ram_mb} МБ: буфер видео ${buffer_mb} МБ (в памяти, не на диске) — примерно на ${fits} камер 2 Мп."
+buffer=${DOZORCAM_BUFFER:-}
+if [ -z "$buffer" ]; then
+  case $(env_get CCTV_BUFFER_DIR) in */buffer-disk) buffer=disk ;; *) buffer=ram ;; esac
+fi
+fits_ram=$((spare_mb / 456))
+fits_disk=$((spare_mb / 150))
+[ "$fits_ram" -lt 1 ] && fits_ram=1
+[ "$fits_disk" -lt 1 ] && fits_disk=1
+[ "$fits_ram" -gt 64 ] && fits_ram=64
+[ "$fits_disk" -gt 64 ] && fits_disk=64
+spool_mb=512
+[ "$ram_mb" -lt 3000 ] && spool_mb=256
+case $buffer in
+  ram)
+    fits=$fits_ram
+    buffer_mb=$((fits * 370))
+    [ "$buffer_mb" -lt 512 ] && buffer_mb=512
+    tmpfs_mb=$buffer_mb
+    env_set CCTV_BUFFER_DIR /var/lib/cctv/buffer
+    say "RAM ${ram_mb} MB: video buffer in RAM (${buffer_mb} MB), enough for about ${fits} cameras of 2 MP; with the buffer on an SSD (DOZORCAM_BUFFER=disk) — about ${fits_disk}." \
+        "RAM ${ram_mb} МБ: буфер видео в памяти (${buffer_mb} МБ) — примерно на ${fits} камер 2 Мп; с буфером на SSD (DOZORCAM_BUFFER=disk) — примерно на ${fits_disk}."
+    ;;
+  disk)
+    fits=$fits_disk
+    buffer_mb=$((fits * 370))
+    tmpfs_mb=64
+    env_set CCTV_BUFFER_DIR /var/lib/cctv/buffer-disk
+    path=${DOZORCAM_BUFFER_PATH:-$(env_get CCTV_BUFFER_DISK)}
+    if [ -n "$path" ]; then
+      case $path in /*) ;; *) die "DOZORCAM_BUFFER_PATH must be an absolute path" "DOZORCAM_BUFFER_PATH — только абсолютный путь" ;; esac
+      as_root mkdir -p "$path"
+      as_root chown 10001:10001 "$path"
+      as_root chmod 0700 "$path"
+      env_set CCTV_BUFFER_DISK "$path"
+    else
+      # shellcheck disable=SC2086  # DOCKER — «docker» или «sudo docker»
+      path=$($DOCKER info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+    fi
+    free_mb=$(df -Pm "$path" 2>/dev/null | awk 'NR == 2 { print $4 }')
+    dev=$(df -P "$path" 2>/dev/null | awk 'NR == 2 { print $1 }')
+    say "Video buffer on disk ($path): up to ${buffer_mb} MB, RAM ${ram_mb} MB is enough for about ${fits} cameras of 2 MP." \
+        "Буфер видео на диске ($path): до ${buffer_mb} МБ, RAM ${ram_mb} МБ хватит примерно на ${fits} камер 2 Мп."
+    say "The disk gets a continuous write of ~0.5 MB/s per camera (~16 TB a year): an SSD only, not an HDD or an SD card." \
+        "Диск получает непрерывную запись ~0,5 МБ/с на камеру (~16 ТБ в год): только SSD, не HDD и не SD-карта."
+    if [ -n "$free_mb" ] && [ "$free_mb" -lt $((buffer_mb + 1024)) ]; then
+      warn "Only ${free_mb} MB free on $path." "На $path свободно только ${free_mb} МБ."
+    fi
+    case $dev in
+      /dev/mmcblk*) warn "$path is on an SD card: it will wear out quickly — keep the buffer in RAM or use an SSD." \
+                         "$path — на SD-карте: она быстро износится; держите буфер в памяти или возьмите SSD." ;;
+      /dev/*) [ "$(lsblk -ndo ROTA "$dev" 2>/dev/null | tr -d ' ')" = 1 ] &&
+                warn "$path looks like a spinning disk (HDD): an SSD is recommended for the buffer." \
+                     "$path похож на жёсткий диск (HDD): для буфера рекомендуем SSD." ;;
+    esac
+    ;;
+  *) die "DOZORCAM_BUFFER: ram or disk" "DOZORCAM_BUFFER: ram или disk" ;;
+esac
 if [ "$ram_mb" -lt 1700 ]; then
   warn "Less than 2 GB RAM: Dozorcam needs at least 2 GB." "Меньше 2 ГБ RAM: Dozorcam нужно не меньше 2 ГБ."
 fi
-env_set CCTV_BUFFER_TMPFS "${buffer_mb}m"
+env_set CCTV_BUFFER_TMPFS "${tmpfs_mb}m"
 env_set CCTV_SPOOL_TMPFS "${spool_mb}m"
 env_set CCTV_BUFFER_MAX_BYTES $((camera_mb * 1048576))
 env_set CCTV_STORAGE_BUDGET_BYTES $(((buffer_mb + spool_mb) * 1048576))

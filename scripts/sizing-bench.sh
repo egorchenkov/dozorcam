@@ -15,7 +15,13 @@
 # память cgroup (anon — процессы, shmem — буфер в tmpfs, peak), буфер на камеру за минуту,
 # OOM, отставание детектора и падения рекордера по журналу. Порты 18890/18891/38654/38680
 # не должны быть заняты; прод и стенд рядом не трогает. CCTV_BENCH_BUFFER_TMPFS — размер tmpfs
-# буфера (по умолчанию 4g; меньше — проверка переполнения), CCTV_BENCH_LOG — копия журнала.
+# буфера (по умолчанию 4g; меньше — проверка переполнения), CCTV_BENCH_LOG — копия журнала,
+# CCTV_BENCH_STREAM_CAP_MB — лимит на поток (по умолчанию 400; установщик ставит 200),
+# CCTV_BENCH_BUFFER_DISK=<каталог> — буфер на диске (каталог хоста, как установка с буфером
+# на SSD) вместо tmpfs: в JSON добавляется запись на диск движком (io.stat), CCTV_BENCH_SERIES
+# — файл, куда раз в минуту окна пишется память cgroup (рост за долгий прогон),
+# CCTV_BENCH_SUBSTREAM=0 — детектор на основном потоке 1080p (так работает камера, заведённая
+# из бота: detect_substream не включён), по умолчанию 1 — на детекторном 640x360.
 set -euo pipefail
 
 N=1 SCENE=quiet CPUS=2 MEM=4g WARM=60 DUR=120 OUT=
@@ -95,14 +101,14 @@ YAML
 } > "$WORK/mediamtx.yml"
 chmod 0644 "$WORK/mediamtx.yml"
 
-python3 - "$N" "$MTX_PORT" > "$WORK/config/cameras.json" <<'PY'
+python3 - "$N" "$MTX_PORT" "${CCTV_BENCH_SUBSTREAM:-1}" > "$WORK/config/cameras.json" <<'PY'
 import json, sys
-n, port = int(sys.argv[1]), sys.argv[2]
+n, port, substream = int(sys.argv[1]), sys.argv[2], sys.argv[3] != "0"
 base = f"rtsp://bench:bench@127.0.0.1:{port}"  # прокси движка требует логин, как у камеры
 print(json.dumps({"cameras": [{
     "camera_id": f"cam{i}", "title": f"Bench {i}", "site": "Bench",
     "rtsp_url": f"{base}/cam{i}", "detect_rtsp_url": f"{base}/cam{i}-detect",
-    "person_detection": True, "detect_substream": True} for i in range(1, n + 1)]}, indent=1))
+    "person_detection": True, "detect_substream": substream} for i in range(1, n + 1)]}, indent=1))
 PY
 chmod 0644 "$WORK/config/cameras.json"
 
@@ -116,14 +122,22 @@ for _ in $(seq 30); do
 done
 
 # --- движок: флаги compose.yml + лимиты ------------------------------------------------
+CAP=$((${CCTV_BENCH_STREAM_CAP_MB:-400} * 1048576))
+BUFFER_MOUNT=(--tmpfs "/var/lib/cctv/buffer:size=${CCTV_BENCH_BUFFER_TMPFS:-4g},uid=10001,gid=10001,mode=0700")
+if [ -n "${CCTV_BENCH_BUFFER_DISK:-}" ]; then
+  # Каталог хоста — владелец uid движка (10001), как в установке с буфером на SSD.
+  mkdir -p "$CCTV_BENCH_BUFFER_DISK"
+  docker run --rm -v "$CCTV_BENCH_BUFFER_DISK:/b" --entrypoint sh "$MTX_IMAGE" -c 'rm -rf /b/* && chown 10001:10001 /b && chmod 0700 /b'
+  BUFFER_MOUNT=(-v "$CCTV_BENCH_BUFFER_DISK:/var/lib/cctv/buffer")
+fi
 docker run -d --name "$PFX-engine" --network host --init --read-only --cap-drop ALL \
   --security-opt no-new-privileges:true --cpus "$CPUS" --memory "$MEM" --memory-swap "$MEM" \
   -e CCTV_PORT=18890 -e CCTV_EVENTS_URL=http://127.0.0.1:18891/v1/events \
   -e CCTV_RTSP_PROXY_PORT=38654 -e CCTV_HUMAN_GATE_MODE=shadow -e CCTV_LANG=en \
-  -e CCTV_BUFFER_MAX_BYTES=419430400 -e CCTV_MAX_TOTAL_BYTES=5368709120 \
+  -e CCTV_BUFFER_MAX_BYTES="$CAP" -e CCTV_MAX_TOTAL_BYTES=5368709120 \
   -e CCTV_STORAGE_BUDGET_BYTES=5368709120 -e CCTV_MIN_FREE_BYTES=67108864 \
   -v "$WORK/config:/etc/cctv:ro" -v "$PFX-state:/var/lib/cctv/state" \
-  --tmpfs "/var/lib/cctv/buffer:size=${CCTV_BENCH_BUFFER_TMPFS:-4g},uid=10001,gid=10001,mode=0700" \
+  "${BUFFER_MOUNT[@]}" \
   --tmpfs /var/lib/cctv/spool:size=512m,uid=10001,gid=10001,mode=0700 \
   --tmpfs /run/cctv:size=8m,uid=10001,gid=10001,mode=0700 --tmpfs /tmp:size=64m,mode=1777 \
   "$IMAGE" engine >/dev/null
@@ -135,10 +149,20 @@ cpu_us() { awk '/^usage_usec/ {print $2}' "$cg/cpu.stat"; }
 stat() { awk -v k="$1" '$1 == k {print $2}' "$cg/memory.stat"; }
 buf_bytes() { docker exec "$PFX-engine" du -sb /var/lib/cctv/buffer 2>/dev/null | awk '{print $1}'; }
 
+wbytes() { awk '{for (i = 2; i <= NF; i++) if ($i ~ /^wbytes=/) {sub(/wbytes=/, "", $i); s += $i}} END {print s + 0}' "$cg/io.stat" 2>/dev/null || echo 0; }
+
 sleep "$WARM"
-c0=$(cpu_us); b0=$(buf_bytes); t0=$(date +%s.%N)
-sleep "$DUR"
-c1=$(cpu_us); b1=$(buf_bytes); t1=$(date +%s.%N)
+c0=$(cpu_us); b0=$(buf_bytes); w0=$(wbytes); t0=$(date +%s.%N)
+if [ -n "${CCTV_BENCH_SERIES:-}" ]; then
+  for m in $(seq $((DUR / 60))); do
+    sleep 60
+    echo "{\"cameras\": $N, \"minute\": $m, \"anon_mib\": $(( $(stat anon) / 1048576 )), \"shmem_mib\": $(( $(stat shmem) / 1048576 )), \"buffer_mib\": $(( $(buf_bytes) / 1048576 ))}" >> "$CCTV_BENCH_SERIES"
+  done
+  sleep $((DUR % 60))
+else
+  sleep "$DUR"
+fi
+c1=$(cpu_us); b1=$(buf_bytes); w1=$(wbytes); t1=$(date +%s.%N)
 running=$(docker inspect -f '{{.State.Running}}' "$PFX-engine")
 docker logs "$PFX-engine" > "$WORK/engine.log" 2>&1
 [ -z "${CCTV_BENCH_LOG:-}" ] || cp "$WORK/engine.log" "$CCTV_BENCH_LOG"
@@ -156,6 +180,9 @@ print(json.dumps({
   "cores": round(cores, 3), "cores_per_camera": round(cores / $N, 3),
   "anon_mib": mib("$(stat anon)"), "shmem_mib": mib("$(stat shmem)"),
   "current_mib": mib("$(cat "$cg/memory.current")"), "peak_mib": mib("$(cat "$cg/memory.peak" 2>/dev/null || echo 0)"),
+  "detector_stream": "substream" if "${CCTV_BENCH_SUBSTREAM:-1}" != "0" else "main",
+  "buffer": "${CCTV_BENCH_BUFFER_DISK:+disk}" or "tmpfs", "stream_cap_mib": $CAP // 2**20,
+  "buffer_mib": mib("${b1:-0}"), "disk_write_mib_s": round(($w1 - $w0) / 2**20 / ($t1 - $t0), 2),
   "buffer_mib_per_camera_minute": round((int("${b1:-0}") - int("${b0:-0}")) / 2**20 / $N / (($t1 - $t0) / 60), 1),
   "running": "$running" == "true", "oom_kill": int("${oom:-0}"),
   "yolo_frames": grab("scanned"), "gate_skipped_frames": grab("skipped") + grab("shadow_skipped"),

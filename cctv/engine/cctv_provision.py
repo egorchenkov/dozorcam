@@ -45,6 +45,14 @@ RESTART_DELAY_SEC = float(os.environ.get("CCTV_PROVISION_RESTART_DELAY", "2"))
 MAX_BODY = 64 * 1024
 MAX_CAMERAS = 32
 CAMERA_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# Поля записи, которые читает движок (`cctv_bridge.Camera`). Писарь обязан знать
+# каждое: незнакомое поле validate() не сохраняет, и любая правка записи молча
+# снимала его — так смена пароля снимала ONVIF-гейт и substream (аудит 09.10, Б-14).
+FIELDS = ("camera_id", "title", "site", "rtsp_url", "detect_rtsp_url", "snapshot_url",
+          "snapshot_user", "snapshot_password", "motion_threshold", "person_gate_threshold",
+          "snapshot_aspect", "person_detection", "detect_substream", "camera_human_events")
+# Флаги хранятся только как true: false — это отсутствие ключа, как у новой камеры.
+FLAGS = ("person_detection", "detect_substream", "camera_human_events")
 
 
 class Invalid(i18n.CodedError, ValueError):
@@ -72,6 +80,16 @@ def _private_host(url: str, schemes: tuple[str, ...]) -> str:
     return parts.hostname
 
 
+def _with_credentials(url: str) -> str:
+    """RTSP-прокси движка без логина и пароля в адресе не стартует, а с ним стоит
+    вся цепочка, не одна камера. Такую запись не пишем вовсе: это адрес не камеры,
+    а, скорее всего, рабочий адрес самого прокси (аудит 09.10, Б-13)."""
+    parts = urllib.parse.urlsplit(url)
+    if not (parts.username and parts.password):
+        raise Invalid("no_credentials", url=mask(url))
+    return url
+
+
 def validate(camera: dict) -> dict:
     """Белый список полей: всё лишнее не сохраняется, всё кривое — отказ."""
     if not isinstance(camera, dict):
@@ -83,12 +101,14 @@ def validate(camera: dict) -> dict:
     site = str(camera.get("site") or camera_id).strip()[:64]
     rtsp_url = str(camera.get("rtsp_url") or "")
     host = _private_host(rtsp_url, ("rtsp",))
+    _with_credentials(rtsp_url)
     entry = {"camera_id": camera_id, "title": title, "site": site, "rtsp_url": rtsp_url}
 
     detect = camera.get("detect_rtsp_url")
     if detect:
         if _private_host(str(detect), ("rtsp",)) != host:
             raise Invalid("detect_other_camera")
+        _with_credentials(str(detect))
         entry["detect_rtsp_url"] = str(detect)
     snapshot = camera.get("snapshot_url")
     if snapshot:
@@ -126,9 +146,84 @@ def validate(camera: dict) -> dict:
         if not 0.2 <= value <= 5:
             raise Invalid("out_of_range", field="snapshot_aspect", range="0.2..5")
         entry["snapshot_aspect"] = value
-    if camera.get("person_detection") is True:
-        entry["person_detection"] = True
+    for flag in FLAGS:
+        if camera.get(flag) is True:
+            entry[flag] = True
     return entry
+
+
+def _rekey(current: dict, patch: dict) -> dict:
+    """Смена логина и пароля: проба камеры приносит адреса целиком, но менять надо
+    только учётку. Пути потоков записи остаются прежними (substream детектора —
+    тот, что выбран для гейта), снимок — тот же адрес; новые адреса берутся,
+    только если прежнего нет или камера переехала на другой хост."""
+    patch = dict(patch)
+    for key in ("rtsp_url", "detect_rtsp_url"):
+        new, old = str(patch.get(key) or ""), str(current.get(key) or "")
+        if not (new and old):
+            continue
+        new_parts, old_parts = urllib.parse.urlsplit(new), urllib.parse.urlsplit(old)
+        if new_parts.hostname != old_parts.hostname:
+            continue
+        userinfo = new_parts.netloc.rpartition("@")[0]
+        hostport = old_parts.netloc.rpartition("@")[2]
+        patch[key] = urllib.parse.urlunsplit(old_parts._replace(
+            netloc=f"{userinfo}@{hostport}" if userinfo else hostport))
+    old_snapshot, new_snapshot = current.get("snapshot_url"), patch.get("snapshot_url")
+    if old_snapshot and new_snapshot and (urllib.parse.urlsplit(str(old_snapshot)).hostname
+                                          == urllib.parse.urlsplit(str(new_snapshot)).hostname):
+        patch.pop("snapshot_url")
+    # Проба по адресу потока (камера вне поиска) снимка не приносит, а учётка у камеры
+    # одна: снимок с той же учёткой, что и поток, получает новый пароль вместе с ним.
+    old_user = urllib.parse.unquote(urllib.parse.urlsplit(str(current.get("rtsp_url") or "")).username or "")
+    new_parts = urllib.parse.urlsplit(str(patch.get("rtsp_url") or ""))
+    if (current.get("snapshot_url") and "snapshot_password" not in patch and new_parts.password
+            and current.get("snapshot_user") == old_user):
+        patch["snapshot_user"] = urllib.parse.unquote(new_parts.username or "")
+        patch["snapshot_password"] = urllib.parse.unquote(new_parts.password)
+    return patch
+
+
+def patch_entry(current: dict, raw: dict, *, unset=(), keep_paths: bool = False) -> dict:
+    """Правка записи на месте: меняются только поля из правки, остальное — байт в байт.
+
+    Вся запись после правки проходит validate(), но пишется не её вывод, а прежняя
+    запись с заменёнными полями: порядок ключей, значения и незатронутые флаги не
+    трогаются. Поле правки, которое validate() не сохранил (false, пусто), — снятие
+    ключа: так выключается детекция людей без замены всей записи."""
+    patch = {key: raw[key] for key in FIELDS if key in raw and key != "camera_id"}
+    unset = [key for key in unset if key in FIELDS and key != "camera_id"]
+    if keep_paths:
+        patch = _rekey(current, patch)
+    merged = dict(current)
+    merged.update(patch)
+    for key in unset:
+        merged.pop(key, None)
+    checked = validate(merged)
+    record = dict(current)
+    for key in [*patch, *unset]:
+        if key not in checked:
+            record.pop(key, None)
+        elif key in record:
+            record[key] = checked[key]
+        else:
+            record = _insert(record, key, checked[key])
+    return record
+
+
+def _insert(record: dict, key: str, value) -> dict:
+    """Новый ключ — на своё место по FIELDS, а не в конец: выключить и снова
+    включить детекцию — та же запись байт в байт."""
+    rank = FIELDS.index(key)
+    later = next((k for k in record if k in FIELDS and FIELDS.index(k) > rank), None)
+    if later is None:
+        return {**record, key: value}
+    result = {}
+    for k, v in record.items():
+        if k == later:
+            result[key] = value
+        result[k] = v
+    return result
 
 
 def load(path: pathlib.Path | None = None) -> dict:
@@ -195,6 +290,8 @@ def summary(data: dict) -> list[dict]:
             "motion_threshold": camera.get("motion_threshold"),
             "person_gate_threshold": camera.get("person_gate_threshold"),
             "snapshot_aspect": camera.get("snapshot_aspect"),
+            "detect_substream": camera.get("detect_substream") is True,
+            "camera_human_events": camera.get("camera_human_events") is True,
         })
     return result
 
@@ -213,25 +310,33 @@ def apply(command: dict, *, path: pathlib.Path | None = None,
     if name == "list":
         return {"ok": True, "cameras": summary(data)}, False
     if name == "upsert":
-        entry = validate(command.get("camera") or {})
-        index = next((i for i, c in enumerate(cameras)
-                      if c.get("camera_id") == entry["camera_id"]), None)
+        raw = command.get("camera") or {}
+        if not isinstance(raw, dict):
+            raise Invalid("camera_not_object")
+        camera_id = str(raw.get("camera_id") or "")
+        if not CAMERA_ID_RE.match(camera_id):
+            raise Invalid("bad_camera_id")
+        index = next((i for i, c in enumerate(cameras) if c.get("camera_id") == camera_id), None)
         if index is None:
             if len(cameras) >= MAX_CAMERAS:
                 raise Invalid("registry_full", limit=MAX_CAMERAS)
-            cameras.append(entry)
+            cameras.append(validate(raw))
             action = "added"
         else:
-            # Правка сохраняет незаданные поля прежней записи: смена пароля не
-            # должна молча сбрасывать порог движения и детекцию людей.
-            merged = dict(cameras[index])
-            merged.update(entry)
-            if command.get("replace") is True:
-                merged = entry
-            cameras[index] = validate(merged)
+            # Правка — только заданные поля поверх записи с диска. Прежняя «замена
+            # всей записи» (replace) собирала её из рабочих адресов моста и клала
+            # движок (аудит 09.10, Б-13); её больше нет.
+            unset = command.get("unset") or ()
+            if not isinstance(unset, (list, tuple)):
+                raise Invalid("camera_not_object")
+            before = cameras[index]
+            cameras[index] = patch_entry(before, raw, unset=unset,
+                                         keep_paths=command.get("keep_paths") is True)
+            if cameras[index] == before:
+                return {"ok": True, "action": "unchanged", "camera_id": camera_id}, False
             action = "updated"
         save(data, path, backups)
-        return {"ok": True, "action": action, "camera_id": entry["camera_id"]}, True
+        return {"ok": True, "action": action, "camera_id": camera_id}, True
     if name == "delete":
         camera_id = str(command.get("camera_id") or "")
         if not CAMERA_ID_RE.match(camera_id):

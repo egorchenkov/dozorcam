@@ -36,8 +36,11 @@ What it does, in order (POSIX sh, readable before running):
    latest release into `~/dozorcam` (no git) and checks them against the release `SHA256SUMS`.
 3. Asks for the bot token and checks it with Telegram (`getMe`).
 4. Takes the language from `$LANG` (`CCTV_LANG`) and the time zone from the host (`CCTV_TZ`).
-5. Sizes the RAM video buffer from the machine memory: 25 % of RAM within 512 MB–4 GB; warns
-   below 2 GB.
+5. Sizes the video buffer from the machine memory: room for as many cameras as fit into RAM
+   whole (processes and buffer within 85 % of RAM, about 0.46 GB per 2 MP camera) and says how
+   many that is; warns below 2 GB. With `DOZORCAM_BUFFER=disk` the buffer goes to an SSD and
+   RAM holds only the processes — more cameras on the same RAM
+   ([sizing.md](sizing.md#buffer-in-ram-or-on-an-ssd)).
 6. Pins the image by digest, starts it, waits for the health check and prints the owner link
    `https://t.me/<bot>?start=<code>` with a QR code.
 
@@ -52,6 +55,8 @@ install — everything by variables:
 | `DOZORCAM_DIR` | install directory, default `~/dozorcam` |
 | `DOZORCAM_VERSION` | a release, default the latest |
 | `DOZORCAM_INSTALL_DOCKER=1` | install Docker without asking |
+| `DOZORCAM_BUFFER` | `ram` (default) or `disk` — the video buffer on an SSD when RAM is short |
+| `DOZORCAM_BUFFER_PATH` | a host directory for the disk buffer (e.g. a separate SSD), default a Docker volume |
 
 ```bash
 curl -fsSL https://egorchenkov.github.io/dozorcam/install.sh | DOZORCAM_TOKEN=<token> DOZORCAM_TZ=Europe/Berlin sh
