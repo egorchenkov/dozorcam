@@ -1250,6 +1250,10 @@ class CctvBot:
             text = (self._t("scan.none_new", known=listed_known) if registered
                     else self._t("scan.none"))
             hint = self._t("scan.none_hint", networks=networks) if not registered else self._t("add.manual_hint")
+            # Неактивированных Hikvision нет и здесь (иначе выше были бы кнопки
+            # активации): новая ждёт на заводском адресе своей подсети, а SADP
+            # и WS-Discovery — широковещание, через туннель их не слышно.
+            hint += "\n" + self._t("scan.hik_factory_hint")
             await self._send(console, text + "\n" + hint,
                              reply_markup=InlineKeyboardMarkup([tail]))
             return

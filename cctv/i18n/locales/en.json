@@ -517,6 +517,7 @@
  "version.how_off": "Once a day the bot asks GitHub Releases for a new version; nothing about your installation is sent. Turn off: CCTV_UPDATE_CHECK=0 in .env.",
  "update.available": "⬆️ Version {version} is available — on the server: dozorcam update",
  "scan.none_hint": "Searched {networks}. Cameras in another subnet? List the networks in CCTV_DISCOVERY_NETWORKS in .env (e.g. 192.0.2.0/24, comma-separated) and restart — or enter the camera address: ✍️ button below.",
+ "scan.hik_factory_hint": "No new Hikvision without a password either. A new Hikvision waits at its factory address 192.168.1.64 in its own subnet, and the engine host has to see that subnet: plug the camera into the engine's LAN or, if the subnet is routed to the host, add it to CCTV_DISCOVERY_NETWORKS. SADP and WS-Discovery are broadcasts and do not pass through a tunnel (VPN).",
  "detected.path": "Stream path found by trying typical ones: {path} ({template})",
  "action.dm": "📩 To my DM",
  "action.dm_on": "📩 Send to me",

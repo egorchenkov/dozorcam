@@ -3,6 +3,28 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [SemVer](https://semver.org/).
 Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
+## [0.3.2] — 2026-10-25
+
+Patch release for the `/add` wizard: registries on DNS names, web interfaces mistaken for
+ONVIF cameras, and where a new Hikvision waits.
+
+### Fixed
+- `/add` no longer offers cameras that are already registered when the registry uses DNS names
+  (`rtsp://gate.example/…`): the search sees cameras by IP, and the bridge compared the name
+  with the address literally, so every registered camera came out "new" and the wizard asked
+  for its login and password. Registered hosts are now matched by name and all its addresses
+  (cached, at most 2 s per check; if DNS fails the search answers as before).
+- A web interface that answers the ONVIF `GetSystemDateAndTime` request with its HTML page
+  (a router or NAS on port 80/8080) is no longer taken for an ONVIF camera: only a SOAP
+  envelope with `GetSystemDateAndTimeResponse` counts.
+- The installer and `dozorcam code` no longer end with "create a group with Topics": since 0.3.0
+  a group is optional, the bot asks where events go (here in the private chat or a group).
+
+### Changed
+- When `/add` finds nothing new, the hint also says where a new Hikvision waits: at the
+  factory address 192.168.1.64 of its own subnet, which the engine host has to see — SADP and
+  WS-Discovery are broadcasts and do not pass through a tunnel (VPN).
+
 ## [0.3.1] — 2026-10-09
 
 Stabilization of 0.3.0 after the first day in production: private chats, frames in topics and

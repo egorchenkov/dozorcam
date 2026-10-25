@@ -7,6 +7,7 @@ its values, or subprocess stderr.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import datetime as dt
 import hashlib
 import ipaddress
@@ -50,6 +51,13 @@ CAMERA_ACTIONS = {"pause", "resume", "retire", "rename"}
 # бот получает непрозрачный токен и второй раз пароль не присылает.
 PROBE_TTL_SECONDS = 900
 SCAN_TTL_SECONDS = 900
+# Реестр на DNS-именах: кандидат поиска приходит адресом, и сравнивать его
+# можно только с адресами имени. Ответ помним, чтобы опрос статуса поиска раз
+# в пару секунд не ходил в DNS; неудачу — недолго, чтобы ожившая зона
+# подхватилась без перезапуска. Ждём не больше таймаута на всё сразу.
+HOST_RESOLVE_TIMEOUT_SEC = 2.0
+HOST_RESOLVE_TTL_SEC = 300
+HOST_RESOLVE_FAIL_TTL_SEC = 30
 # Активация новых Hikvision: пакет не больше этого, задание живёт как поиск.
 # Пароль admin, заданный камерам, сперва ложится в хранилище state (0600) и
 # только потом уходит в сеть: частичный сбой пакета не должен оставить камеру
@@ -163,6 +171,15 @@ def correct_aspect(jpeg: bytes, aspect: float | None) -> bytes:
     return encoded.tobytes() if ok else jpeg
 
 
+def _lookup_addresses(name: str) -> frozenset[str]:
+    """Все адреса имени; сбой DNS — пустое множество, а не исключение."""
+    try:
+        infos = socket.getaddrinfo(name, None, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return frozenset()
+    return frozenset(str(info[4][0]) for info in infos)
+
+
 @dataclass
 class Blob:
     body: bytes
@@ -188,6 +205,11 @@ class Bridge:
         self._scans: dict[str, dict] = {}
         self._probes: dict[str, tuple[float, dict, dict]] = {}
         self._activations: dict[str, dict] = {}
+        # Имя из реестра → (годен до, ответ DNS); см. _resolve_hosts.
+        self._resolve_lock = threading.Lock()
+        self._resolve_cache: dict[str, tuple[float, concurrent.futures.Future]] = {}
+        self._resolver = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="cctv-resolve")
         self.activation_port = 80  # ISAPI камеры; тесты подменяют на порт эмулятора
         self.activation_keys = hik.KeyCache  # фабрика RSA-ключей на пакет
         self.networks = DISCOVERY_NETWORKS
@@ -436,14 +458,59 @@ class Bridge:
 
     def _registered_hosts(self) -> dict[str, str]:
         """Хост → camera_id по реестру. Кандидат поиска с таким хостом — уже
-        заведённая камера: предлагать её кнопкой «добавить» значит заводить дубль."""
+        заведённая камера: предлагать её кнопкой «добавить» значит заводить дубль.
+
+        Ключи — и имя из URL, и все его адреса: поиск видит камеру только по IP,
+        и реестр на DNS-именах иначе целиком выглядел бы «новыми камерами».
+        DNS не ответил — остаётся одно имя, мастер /add не ждёт и не падает."""
         hosts: dict[str, str] = {}
+        names: list[tuple[str, str]] = []
         for camera_id, camera in self.cameras.items():
             for url in (camera.rtsp_url, camera.detect_rtsp_url, camera.snapshot_url):
-                host = urllib.parse.urlsplit(url).hostname if url else ""
+                try:
+                    host = urllib.parse.urlsplit(url).hostname if url else ""
+                except ValueError:  # битый URL в реестре — не повод ронять поиск
+                    host = ""
                 if host:
                     hosts.setdefault(host, camera_id)
+                    names.append((host, camera_id))
+        resolved = self._resolve_hosts({host for host, _ in names})
+        for host, camera_id in names:
+            for address in resolved.get(host, ()):
+                hosts.setdefault(address, camera_id)
         return hosts
+
+    def _resolve_hosts(self, names: set[str]) -> dict[str, frozenset[str]]:
+        """Адреса имён — параллельно, с кэшем и общим таймаутом."""
+        pending: dict[str, concurrent.futures.Future] = {}
+        current = time.monotonic()
+        with self._resolve_lock:
+            for name in names:
+                try:
+                    ipaddress.ip_address(name)
+                    continue  # уже адрес
+                except ValueError:
+                    pass
+                entry = self._resolve_cache.get(name)
+                if entry is None or entry[0] < current:
+                    future = self._resolver.submit(_lookup_addresses, name)
+                    entry = (current + HOST_RESOLVE_TTL_SEC, future)
+                    self._resolve_cache[name] = entry
+                pending[name] = entry[1]
+        if not pending:
+            return {}
+        concurrent.futures.wait(pending.values(), timeout=HOST_RESOLVE_TIMEOUT_SEC)
+        result: dict[str, frozenset[str]] = {}
+        with self._resolve_lock:
+            for name, future in pending.items():
+                if not future.done():
+                    continue  # ответ дойдёт в кэш к следующему опросу статуса
+                addresses = future.result()
+                if not addresses:
+                    self._resolve_cache[name] = (min(self._resolve_cache[name][0],
+                                                     current + HOST_RESOLVE_FAIL_TTL_SEC), future)
+                result[name] = addresses
+        return result
 
     def _sweep_scans(self) -> None:
         cutoff = time.time() - SCAN_TTL_SECONDS

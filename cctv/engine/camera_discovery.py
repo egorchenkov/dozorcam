@@ -350,7 +350,7 @@ def identify(candidate: Candidate, *, timeout: float = SCAN_TIMEOUT) -> Candidat
                 root = soap_call(url, "<tds:GetSystemDateAndTime/>", timeout=timeout)
             except Exception:
                 continue
-            if root is not None:
+            if is_onvif_time_reply(root):
                 candidate.onvif_url = url
                 break
         if candidate.onvif_url:
@@ -474,6 +474,23 @@ def soap_call(url: str, body: str, *, user: str | None = None, password: str | N
             raise DiscoveryError("auth_failed")
         raise DiscoveryError("onvif_refused")
     return root
+
+
+SOAP_ENVELOPES = ("http://www.w3.org/2003/05/soap-envelope",
+                  "http://schemas.xmlsoap.org/soap/envelope/")
+
+
+def is_onvif_time_reply(root: ET.Element | None) -> bool:
+    """Ответ — SOAP Envelope с GetSystemDateAndTimeResponse в теле.
+
+    Разбираемый XML ещё не ONVIF: веб-морда на 80/8080 отдаёт свою страницу
+    (корень html) на любой POST, и без этой проверки роутер или NAS попадали в
+    «новые камеры»."""
+    if root is None or not any(root.tag == f"{{{ns}}}Envelope" for ns in SOAP_ENVELOPES):
+        return False
+    body = next((child for child in root if child.tag.endswith("}Body")), None)
+    return body is not None and any(
+        node.tag.rpartition("}")[2] == "GetSystemDateAndTimeResponse" for node in body.iter())
 
 
 def onvif_service(host: str, *, timeout: float = SCAN_TIMEOUT) -> str:

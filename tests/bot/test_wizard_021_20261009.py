@@ -527,6 +527,9 @@ class EmptyAddTest(Base):
                 self.assertIn(self.t("scan.none"), message["text"])
                 self.assertIn(self.t("scan.none_hint", networks="192.0.2.0/24"), message["text"])
                 self.assertIn("CCTV_DISCOVERY_NETWORKS", message["text"])
+                # Новой Hikvision не видно — подсказка про заводской адрес её подсети.
+                self.assertIn(self.t("scan.hik_factory_hint"), message["text"])
+                self.assertIn("192.168.1.64", message["text"])
                 labels = [b.text for row in message["reply_markup"].inline_keyboard for b in row]
                 self.assertIn(self.t("add.manual_button"), labels)
 
@@ -537,7 +540,19 @@ class EmptyAddTest(Base):
         await self.bot._discover()
         text = self.tg.of("send_message")[-1]["text"]
         self.assertIn(self.t("add.manual_hint"), text)
-        self.assertNotIn("CCTV_DISCOVERY_NETWORKS", text)
+        self.assertNotIn(self.t("scan.none_hint", networks="192.0.2.0/24"), text)
+        self.assertIn(self.t("scan.hik_factory_hint"), text)
+
+    async def test_inactive_hikvision_found_needs_no_factory_hint(self) -> None:
+        where = await self.claim()
+        await self.choose(where, 0)
+        self.scan["candidates"] = [{"host": "192.0.2.5", "registered_camera_id": "gate"},
+                                   {"host": "192.0.2.6", "vendor": "hikvision",
+                                    "activated": False, "activation": "v3"}]
+        await self.bot._discover()
+        text = self.tg.of("send_message")[-1]["text"]
+        self.assertIn(self.t("scan.inactive", count=1), text)
+        self.assertNotIn(self.t("scan.hik_factory_hint"), text)
 
 
 class AddressTest(Base):

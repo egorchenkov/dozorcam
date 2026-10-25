@@ -12,7 +12,7 @@
 #
 # Без вопросов (CI, автоматизация) — всё переменными:
 #   DOZORCAM_TOKEN=<токен>  DOZORCAM_LANG=en|ru  DOZORCAM_TZ=Europe/Berlin
-#   DOZORCAM_DIR=~/dozorcam  DOZORCAM_VERSION=0.3.1 (иначе последний релиз)
+#   DOZORCAM_DIR=~/dozorcam  DOZORCAM_VERSION=0.3.2 (иначе последний релиз)
 #   DOZORCAM_INSTALL_DOCKER=1 (поставить Docker без вопроса)
 #   DOZORCAM_BUFFER=ram|disk (буфер видео в RAM — по умолчанию — или на SSD, когда RAM мало),
 #   DOZORCAM_BUFFER_PATH=/mnt/ssd/dozorcam (каталог буфера на диске; иначе том Docker)

@@ -7,7 +7,7 @@ recording buffer from your IP cameras, looks for people (motion gate → YOLO) a
 snapshots and clips to Telegram: to your private chat, a group, or a forum group with a
 topic per camera or per location. No cloud: video lives in the node's RAM and in your chat.
 
-Current release: **<!--site:version-->0.3.1<!--/site-->** ·
+Current release: **<!--site:version-->0.3.2<!--/site-->** ·
 [Changelog](CHANGELOG.md) · [Releases](https://github.com/egorchenkov/dozorcam/releases)
 
 > Provided **as is** (see [CONTRIBUTING](CONTRIBUTING.md)): a one-person home project,

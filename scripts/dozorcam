@@ -6,7 +6,7 @@
 #   dozorcam update [-y] [ВЕРСИЯ] | backup [ФАЙЛ] | restore [-y] ФАЙЛ
 #   dozorcam uninstall [-y] [--volumes] [--image]
 #
-# Образ в .env закреплён по digest (CCTV_IMAGE_TAG=0.3.1@sha256:…): pull по тегу
+# Образ в .env закреплён по digest (CCTV_IMAGE_TAG=0.3.2@sha256:…): pull по тегу
 # не перепрыгнет молча через версии. update берёт версию из GitHub Releases,
 # показывает CHANGELOG между версиями и при провале healthcheck возвращает прежние
 # .env и compose.yml (прежний образ остаётся локально — откат без сети).
@@ -233,8 +233,8 @@ cmd_code() {  # [--wait] — ссылка владельца и QR; --wait — �
     echo "    /start $code"
   fi
   echo
-  say "Then create a group with Topics, add the bot there and make it an admin — it will guide you." \
-      "Дальше создайте группу с темами, добавьте туда бота и сделайте администратором — он подскажет."
+  say "Then the bot asks where events go — here in the private chat or to a group — and guides you step by step." \
+      "Дальше бот спросит, куда присылать события — сюда, в личку, или в группу, — и проведёт по шагам."
 }
 
 cmd_start() {
