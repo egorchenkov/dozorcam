@@ -11,6 +11,13 @@ ONVIF SOAP с WSSE PasswordDigest и RTSP DESCRIBE с Digest по ONVIF-стор
 активирует, но ответ теряется (500); wrong_password — «OK», но пароль на
 камере не тот (вход новым паролем не проходит); no_onvif — Integrate не
 принимает PUT.
+
+Сеть камеры (`/ISAPI/System/Network/interfaces/1/ipAddress`): заводская статика
+192.168.1.64, PUT принимается только с тем же составом тегов, что в GET.
+`network_reply`: ok — применяет сразу; reboot — statusCode 7, применяет после
+`PUT /ISAPI/System/reboot`; lost — применяет, но рвёт соединение без ответа;
+refuse — 400. DHCP выдаёт `dhcp_address` (пусто — аренды нет, адрес прежний).
+`extra_ips` — те же ответы ещё на адресах (например, IPv6 link-local).
 """
 from __future__ import annotations
 
@@ -22,6 +29,7 @@ import secrets
 import socket
 import threading
 import urllib.parse
+import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from cctv.engine import hikvision_activation as hik
@@ -32,6 +40,16 @@ INTEGRATE_FALSE = ('<?xml version="1.0" encoding="UTF-8"?>\n<Integrate version="
                    "<CGI>\n<enable>true</enable>\n<certificateType>digest</certificateType>\n</CGI>\n"
                    "<ONVIF>\n<enable>{onvif}</enable>\n<certificateType>digest/wsse</certificateType>\n"
                    "</ONVIF>\n</Integrate>\n")
+FACTORY_ADDRESS = "192.168.1.64"
+NETWORK_XML = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+               '<IPAddress version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema">\n'
+               "<ipVersion>dual</ipVersion>\n<addressingType>{mode}</addressingType>\n"
+               "<ipAddress>{address}</ipAddress>\n<subnetMask>{mask}</subnetMask>\n"
+               "<DefaultGateway>\n<ipAddress>{gateway}</ipAddress>\n</DefaultGateway>\n"
+               "<PrimaryDNS>\n<ipAddress>198.51.100.53</ipAddress>\n</PrimaryDNS>\n"
+               "<SecondaryDNS>\n<ipAddress>0.0.0.0</ipAddress>\n</SecondaryDNS>\n"
+               "<Ipv6Mode>\n<ipV6AddressingType>ra</ipV6AddressingType>\n</Ipv6Mode>\n"
+               "</IPAddress>\n")
 SDP = "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=Media\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n"
 
 
@@ -47,8 +65,15 @@ def _md5(text: str) -> str:
 
 class HikEmulator:
     def __init__(self, ip: str, http_port: int, *, protocol: str = "v3", fail: str = "",
-                 model: str = "DS-2CD2543G2-IS") -> None:
+                 model: str = "DS-2CD2543G2-IS", network_reply: str = "ok",
+                 dhcp_address: str = "", extra_ips: tuple[str, ...] = ()) -> None:
         self.ip, self.http_port, self.protocol, self.fail, self.model = ip, http_port, protocol, fail, model
+        self.network_reply, self.dhcp_address, self.extra_ips = network_reply, dhcp_address, extra_ips
+        self.network = {"mode": "static", "address": FACTORY_ADDRESS, "mask": "255.255.255.0",
+                        "gateway": "0.0.0.0"}
+        self._pending_network: dict | None = None
+        self.network_puts: list[str] = []
+        self.reboots = 0
         self.rtsp_port = free_port()
         self.activated = False
         self.admin_password: str | None = None
@@ -79,9 +104,23 @@ class HikEmulator:
             def log_message(self, *_args):
                 pass
 
-        self.http = ThreadingHTTPServer((self.ip, self.http_port), Handler)
-        self.http.daemon_threads = True
-        threading.Thread(target=self.http.serve_forever, daemon=True).start()
+        self.servers = []
+        for ip in (self.ip, *self.extra_ips):
+            server_class = ThreadingHTTPServer
+            address: tuple = (ip, self.http_port)
+            if ":" in ip:
+                host, _, scope = ip.partition("%")
+
+                class V6(ThreadingHTTPServer):
+                    address_family = socket.AF_INET6
+
+                server_class = V6
+                address = (host, self.http_port, 0, socket.if_nametoindex(scope) if scope else 0)
+            server = server_class(address, Handler)
+            server.daemon_threads = True
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.servers.append(server)
+        self.http = self.servers[0]
         self.rtsp = socket.socket()
         self.rtsp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.rtsp.bind((self.ip, self.rtsp_port))
@@ -90,8 +129,9 @@ class HikEmulator:
         return self
 
     def stop(self) -> None:
-        self.http.shutdown()
-        self.http.server_close()
+        for server in self.servers:
+            server.shutdown()
+            server.server_close()
         self.rtsp.close()
 
     @property
@@ -133,6 +173,13 @@ class HikEmulator:
                 return self._status(req, 400, 6, "badXmlFormat")
             self.onvif_enabled = True
             return self._status(req, 200, 1, "OK")
+        if path == "/ISAPI/System/Network/interfaces/1/ipAddress":
+            return self._network(req, method, body)
+        if path == "/ISAPI/System/reboot" and method == "PUT":
+            self.reboots += 1
+            if self._pending_network is not None:
+                self.network, self._pending_network = self._pending_network, None
+            return self._status(req, 200, 1, "OK")
         if path == "/ISAPI/Security/ONVIF/users" and method == "GET":
             users = "".join(f"<User><id>{uid}</id><userName>{name}</userName>"
                             f"<userType>operator</userType></User>"
@@ -145,6 +192,40 @@ class HikEmulator:
             self.onvif_users[fields["username"]] = (fields.get("id", "1"), fields["password"])
             return self._status(req, 200, 1, "OK")
         return self._send(req, 404, "<ResponseStatus><statusCode>4</statusCode></ResponseStatus>")
+
+    def network_xml(self) -> str:
+        return NETWORK_XML.format(**self.network)
+
+    def _network(self, req, method: str, body: str) -> None:
+        if method == "GET":
+            return self._send(req, 200, self.network_xml())
+        self.network_puts.append(body)
+        try:
+            root = ET.fromstring(body)
+            live = ET.fromstring(self.network_xml())
+        except ET.ParseError:
+            return self._status(req, 400, 6, "badXmlFormat")
+        # Капризная камера: тот же состав тегов и порядок, что в её GET.
+        tags = lambda node: [child.tag for child in node.iter()]
+        if tags(root) != tags(live) or self.network_reply == "refuse":
+            return self._status(req, 400, 6, "badXmlContent")
+        ns = "{http://www.isapi.org/ver20/XMLSchema}"
+        mode = root.findtext(f"{ns}addressingType")
+        if mode == "dynamic":
+            update = dict(self.network, mode="dynamic",
+                          address=self.dhcp_address or self.network["address"])
+        else:
+            update = {"mode": "static", "address": root.findtext(f"{ns}ipAddress"),
+                      "mask": root.findtext(f"{ns}subnetMask"),
+                      "gateway": root.findtext(f"{ns}DefaultGateway/{ns}ipAddress")}
+        if self.network_reply == "reboot":
+            self._pending_network = update
+            return self._status(req, 200, 7, "Reboot Required")
+        self.network = update
+        if self.network_reply == "lost":
+            req.close_connection = True
+            return None
+        return self._status(req, 200, 1, "OK")
 
     def _activation(self, req, method: str, path: str, body: str) -> None:
         if self.protocol == "v3" and path == "/ISAPI/System/activate/GetChallengeV3":

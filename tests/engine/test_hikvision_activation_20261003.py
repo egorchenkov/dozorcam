@@ -96,7 +96,7 @@ class SadpTest(unittest.TestCase):
                  b"<DeviceDescription>DS-2CD2543G2-IS</DeviceDescription>"
                  b"<IPv4Address>192.0.2.64</IPv4Address><Activated>false</Activated></ProbeMatch>")
         self.assertEqual({"host": "192.0.2.64", "activated": False, "model": "DS-2CD2543G2-IS",
-                          "mac": ""}, hik.parse_sadp(reply))
+                          "mac": "", "ipv6": "", "iface": ""}, hik.parse_sadp(reply))
         self.assertIsNone(hik.parse_sadp(reply.replace(b"192.0.2.64", b"8.8.8.8")))
         self.assertIsNone(hik.parse_sadp(b"<ProbeMatch><IPv4Address>192.0.2.64</IPv4Address>"
                                          b"</ProbeMatch>"))

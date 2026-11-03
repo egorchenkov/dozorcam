@@ -35,6 +35,8 @@ services:
       CCTV_DISCOVERY_NETWORKS: ${CCTV_DISCOVERY_NETWORKS:-}
       CCTV_LANG: ${CCTV_LANG:-}
       CCTV_TZ: ${CCTV_TZ:-}
+      # Имя узла для отказоустойчивости (раздел [failover] config.toml, docs/failover.md).
+      CCTV_NODE: ${CCTV_NODE:-}
       # Лимиты под tmpfs ниже: буфер — НА КАМЕРУ (и на детекторный поток), бюджет — на всё.
       CCTV_BUFFER_MAX_BYTES: ${CCTV_BUFFER_MAX_BYTES:-419430400}
       CCTV_MAX_TOTAL_BYTES: ${CCTV_STORAGE_BUDGET_BYTES:-2684354560}
@@ -72,6 +74,7 @@ services:
       CCTV_EVENT_MERGE_SEC: ${CCTV_EVENT_MERGE_SEC:-}
       CCTV_UPDATE_CHECK: ${CCTV_UPDATE_CHECK:-}
       CCTV_UPDATE_URL: ${CCTV_UPDATE_URL:-}
+      CCTV_NODE: ${CCTV_NODE:-}
       CCTV_BRIDGE_URL: http://127.0.0.1:${CCTV_BRIDGE_PORT:-8780}
       CCTV_EVENTS_PORT: ${CCTV_EVENTS_PORT:-8781}
     volumes:

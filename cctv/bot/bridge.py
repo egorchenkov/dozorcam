@@ -171,10 +171,14 @@ class Bridge:
     def scan_status(self, scan_id: str) -> dict:
         return self._json("GET", f"/v1/discovery/scans/{urllib.parse.quote(scan_id)}")
 
-    def activation_start(self, hosts: list[str], password: str | None = None) -> dict:
+    def activation_start(self, hosts: list[str], password: str | None = None,
+                         network: dict | None = None) -> dict:
         """Активация новых Hikvision. Без пароля — его генерирует мост, и до
-        показа владельцу он через бота не идёт."""
+        показа владельцу он через бота не идёт. `network` — сеть для камер с
+        заводским адресом чужой подсети ({"mode": "dhcp"} или static)."""
         body: dict = {"hosts": list(hosts)}
+        if network is not None:
+            body["network"] = network
         if password is None:
             body["generate"] = True
         else:

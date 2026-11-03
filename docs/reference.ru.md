@@ -92,6 +92,7 @@ English: [reference.md](reference.md). Установка, обновление 
 | `/lang en\|ru` | язык интерфейса; по умолчанию `CCTV_LANG`, иначе язык Telegram владельца, иначе английский |
 | `/help` | команды и кнопки текущего режима |
 | `/version` | установленная версия и последний релиз |
+| `/nodes` | узлы: где работают движок и бот, пригодность, переключение роли (владелец; только при нескольких узлах, [отказоустойчивость](failover.ru.md)) |
 
 ## Люди: владелец, допущенные, приглашённые
 
@@ -211,6 +212,7 @@ cctv/engine/   мост (HTTP API), конвейер (буфер записи, �
 cctv/bot/      Telegram-интерфейс (python-telegram-bot): маршруты (режимы доставки), карта, карточки, мастер
 cctv/i18n/     locales/<lang>.json — всё, что читает человек; CI сверяет паритет en/ru
 cctv/container супервизор контейнера (роль engine | bot) и его healthcheck
+cctv/failover/ слой отказоустойчивости над супервизором: узлы, режим наготове, переключение ролей (docs/failover.ru.md)
 scripts/       install.sh, обёртка dozorcam, release-assets.sh, site-sync.py, sizing-bench.sh
 deploy/        config.example.toml, secrets.example.toml, systemd-юниты (справочно, без контейнера)
 tests/         pytest: движок, бот во всех режимах доставки, i18n-гейт, smoke-тест установщика

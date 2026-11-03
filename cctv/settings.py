@@ -2,7 +2,7 @@
 
 Каталог содержит:
 
-    config.toml    настройки; разделы [common], [engine], [bot]
+    config.toml    настройки; разделы [common], [engine], [bot], [failover]
     cameras.json   реестр камер (адреса и пароли камер — только здесь)
     secrets.toml   секреты бота (bot_token), режим 0600
 
@@ -37,6 +37,8 @@ CONFIG_FILE = "config.toml"
 SECRETS_FILE = "secrets.toml"
 CAMERAS_FILE = "cameras.json"
 COMPONENTS = ("engine", "bot")
+# Разделы без переменных CCTV_*: их читает свой слой (failover — cctv.failover.config).
+LAYER_SECTIONS = ("failover",)
 
 # Внутренняя связь мост↔бот по умолчанию — loopback без TLS; порты свои, а не
 # 443/8443, чтобы стенд и прод на одном узле не делили их случайно.
@@ -168,7 +170,7 @@ def load(component: str, env: MutableMapping[str, str] | None = None) -> dict[st
                 print("[cctv] " + i18n.t("config.secrets_mode", i18n.env_lang(env),
                                          path=str(path), mode=f"{mode:04o}"), file=sys.stderr)
         unknown = [key for key, value in data.items()
-                   if isinstance(value, dict) and key not in ("common", *COMPONENTS)]
+                   if isinstance(value, dict) and key not in ("common", *COMPONENTS, *LAYER_SECTIONS)]
         if unknown:
             raise SettingsError("unknown_sections", path=str(path), sections=", ".join(sorted(unknown)))
         values.update(_flatten(data, name))

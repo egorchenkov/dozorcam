@@ -17,6 +17,11 @@
 
 Состояние супервизора — JSON в CCTV_SUPERVISOR_STATUS (/run/cctv, tmpfs);
 ``python -m cctv.container health`` читает его и проверяет живость роли.
+
+Отказоустойчивость (раздел [failover] конфига, cctv.failover) — слой над
+супервизором, а не внутри движка и бота: агент слоя отвечает «включись или
+замри». Замер — процессы роли остановлены, контейнер жив (state «armed»,
+healthcheck зелёный); включился — роль стартует заново, как после рестарта.
 """
 from __future__ import annotations
 
@@ -32,7 +37,8 @@ import time
 import urllib.error
 import urllib.request
 
-from . import i18n, settings
+from . import failover, i18n, settings
+from .failover import probe as failover_probe
 
 STATUS_PATH = pathlib.Path(os.environ.get("CCTV_SUPERVISOR_STATUS", "/run/cctv/supervisor.json"))
 RUN_DIR = STATUS_PATH.parent
@@ -116,6 +122,10 @@ class Child:
         self.proc = None
         return code
 
+    def terminate(self) -> None:
+        if self.alive():
+            self.proc.terminate()
+
     def stop(self) -> None:
         if not self.alive():
             self.proc = None
@@ -132,6 +142,9 @@ class Child:
 
 class Supervisor:
     role = ""
+    # Процессы, которым слой подставляет адрес соседней роли (мост / приёмник событий):
+    # сменился держатель соседней роли — перезапускаются только они.
+    wired: tuple[str, ...] = ()
 
     def __init__(self) -> None:
         # Пустая CCTV_* (compose подставляет "" для незаполненной строки .env) — то же,
@@ -144,6 +157,10 @@ class Supervisor:
         # Язык строк для человека (журнал «нет конфига», статус для healthcheck):
         # CCTV_LANG окружения или config.toml роли, иначе en.
         self.lang = i18n.env_lang(self.base_env)
+        # Агент слоя отказоустойчивости; None — раздела [failover] нет, роль всегда активна.
+        self.layer: failover.Agent | None = None
+        self.layer_cfg: failover.Failover | None = None
+        self.wiring: dict[str, str] = {}
 
     def resolve_lang(self, resolved: dict[str, str]) -> str:
         self.lang = i18n.env_lang(resolved)
@@ -158,8 +175,13 @@ class Supervisor:
         self.stopping = True
 
     def stop_all(self) -> None:
+        # Сначала сигнал всем, потом ожидание: замирание узла не ждёт процессы по очереди.
+        for child in reversed(self.children):
+            child.terminate()
         for child in reversed(self.children):
             child.stop()
+        if self.layer is not None:
+            self.layer.report(False)
 
     def problem(self, state: str, message: str) -> None:
         """Понятная причина простоя: в журнал один раз, в статус — каждый тик."""
@@ -173,9 +195,68 @@ class Supervisor:
         return config_fingerprint(self.base_env)
 
     def wait_config_change(self, fingerprint: tuple, state: str, message: str) -> None:
+        active = self.layer.active() if self.layer is not None else None
         while not self.stopping and self.fingerprint() == fingerprint:
+            if self.layer is not None and self.layer.active() != active:
+                return  # роль сняли или назначили — решать заново
             self.problem(state, message)
-            self.sleep(CONFIG_POLL_SEC)
+            self.pause(CONFIG_POLL_SEC)
+
+    def pause(self, seconds: float) -> None:
+        """Сон, который прерывает смена назначения роли."""
+        if self.layer is None:
+            return self.sleep(seconds)
+        active = self.layer.active()
+        deadline = time.monotonic() + seconds
+        while not self.stopping and time.monotonic() < deadline and self.layer.active() == active:
+            self.layer.wait(min(TICK_SEC, max(deadline - time.monotonic(), 0)))
+
+    # --- слой отказоустойчивости ----------------------------------------
+    def attach_layer(self):
+        """Агент по разделу [failover]; (state, сообщение) — раздел неверен, роль не стартует."""
+        try:
+            cfg = failover.load(self.base_env)
+        except failover.FailoverError as exc:
+            self.detach_layer()
+            return "no_config", self.reason(exc)
+        if cfg == self.layer_cfg and (cfg is None or self.layer is not None):
+            return None
+        self.detach_layer()
+        if cfg is None:
+            return None
+        agent = failover.Agent(cfg, self.role, settings.state_dir(self.base_env), self.probe, log=log)
+        try:
+            agent.start()
+        except OSError as exc:
+            agent.stop()
+            return "no_config", i18n.t("supervisor.failover_listen", self.lang,
+                                       url=cfg.node(cfg.me).agent(self.role), reason=exc)
+        self.layer, self.layer_cfg = agent, cfg
+        return None
+
+    def detach_layer(self) -> None:
+        if self.layer is not None:
+            self.layer.stop()
+        self.layer = self.layer_cfg = None
+
+    def probe(self) -> dict:
+        """Пригодность узла к роли (раз в check_sec); переопределяется ролями."""
+        return {"fit": True}
+
+    def child_env(self, env: dict[str, str]) -> dict[str, str]:
+        if self.layer is None:
+            return env
+        return {**env, **self.wiring, **self.layer.panel_env()}
+
+    def hold_armed(self, fingerprint: tuple) -> None:
+        """Узел наготове: процессы роли не запущены, ждём назначения или правки конфига."""
+        self.stop_all()
+        holder = self.layer.holder()
+        log(f"роль {self.role} наготове: её держит узел {holder}")
+        while (not self.stopping and self.layer is not None and not self.layer.active()
+               and self.fingerprint() == fingerprint):
+            write_status("armed", holder, role=self.role, node=self.layer.cfg.me, holder=self.layer.holder())
+            self.layer.wait(TICK_SEC)
 
     def sleep(self, seconds: float) -> None:
         deadline = time.monotonic() + seconds
@@ -186,15 +267,26 @@ class Supervisor:
         signal.signal(signal.SIGTERM, self.on_signal)
         signal.signal(signal.SIGINT, self.on_signal)
         RUN_DIR.mkdir(parents=True, exist_ok=True)
-        while not self.stopping:
-            fingerprint = self.fingerprint()
-            prepared = self.prepare()
-            if isinstance(prepared, tuple):
-                self.wait_config_change(fingerprint, *prepared)
-                continue
-            self.last_problem = ""
-            self.supervise(prepared, fingerprint)
+        try:
+            while not self.stopping:
+                fingerprint = self.fingerprint()
+                problem = self.attach_layer()
+                if problem:
+                    self.wait_config_change(fingerprint, *problem)
+                    continue
+                if self.layer is not None and not self.layer.active():
+                    self.hold_armed(fingerprint)
+                    continue
+                prepared = self.prepare()
+                if isinstance(prepared, tuple):
+                    self.wait_config_change(fingerprint, *prepared)
+                    continue
+                self.last_problem = ""
+                self.supervise(prepared, fingerprint)
+                self.stop_all()
+        finally:
             self.stop_all()
+            self.detach_layer()
         write_status("stopped", role=self.role)
         return 0
 
@@ -202,22 +294,42 @@ class Supervisor:
         next_config_check = time.monotonic() + CONFIG_POLL_SEC
         for child in self.children:
             child.next_start = 0.0
+        self.wiring = self.layer.wiring() if self.layer is not None else {}
         while not self.stopping:
+            if self.layer is not None:
+                if not self.layer.active():
+                    log(f"роль {self.role} передана узлу {self.layer.holder()}: замираю")
+                    return
+                wiring = self.layer.wiring()
+                if wiring != self.wiring:
+                    log(f"соседняя роль на узле {self.layer.holder('bot' if self.role == 'engine' else 'engine')}: "
+                        f"перезапуск {', '.join(self.wired) or '—'}")
+                    self.wiring = wiring
+                    for child in self.children:
+                        if child.name in self.wired:
+                            child.stop()
+                            child.next_start = 0.0
             for child in self.children:
                 child.reap()
             for child in self.children:
                 if not child.alive() and time.monotonic() >= child.next_start:
                     if not self.before_start(child, env):
                         break
-                    child.start(env)
-            write_status("running", "", role=self.role,
-                         children={c.name: c.alive() for c in self.children})
+                    child.start(self.child_env(env))
+            alive = {c.name: c.alive() for c in self.children}
+            extra = {"node": self.layer.cfg.me} if self.layer is not None else {}
+            write_status("running", "", role=self.role, children=alive, **extra)
+            if self.layer is not None and all(alive.values()):
+                self.layer.report(True)
             if time.monotonic() >= next_config_check:
                 next_config_check = time.monotonic() + CONFIG_POLL_SEC
                 if self.fingerprint() != fingerprint:
                     log("конфиг-каталог или реестр изменился: перезапуск роли")
                     return
-            time.sleep(TICK_SEC)
+            if self.layer is not None:
+                self.layer.wait(TICK_SEC)
+            else:
+                time.sleep(TICK_SEC)
 
     # --- переопределяется ролями ---------------------------------------
     def prepare(self):
@@ -230,6 +342,7 @@ class Supervisor:
 
 class EngineSupervisor(Supervisor):
     role = "engine"
+    wired = ("bridge",)
     proxy_config = RUN_DIR / "cameras.proxy.json"
     empty_config = RUN_DIR / "cameras.empty.json"
 
@@ -243,6 +356,16 @@ class EngineSupervisor(Supervisor):
 
     def fingerprint(self) -> tuple:
         return config_fingerprint(self.base_env, (registry_file(self.base_env),))
+
+    def probe(self) -> dict:
+        """Камеры реестра достижимы по TCP (без RTSP/ONVIF): реестр state, иначе исходник."""
+        managed = registry_file(self.base_env)
+        if not managed.is_file():
+            try:
+                managed = pathlib.Path(settings.apply("engine", dict(self.base_env))["CCTV_CAMERA_CONFIG"])
+            except settings.SettingsError:
+                return {"fit": False, "reason": "no_config"}
+        return failover_probe.cameras(managed)
 
     def prepare(self):
         env = dict(self.base_env)
@@ -302,6 +425,7 @@ class EngineSupervisor(Supervisor):
 
 class BotSupervisor(Supervisor):
     role = "bot"
+    wired = ("bot",)
 
     def __init__(self) -> None:
         super().__init__()
@@ -323,6 +447,14 @@ class BotSupervisor(Supervisor):
         if rejected:
             return "no_config", rejected
         return env
+
+    def probe(self) -> dict:
+        """Bot API отвечает на getMe (опрос getUpdates активного узла это не трогает)."""
+        try:
+            resolved = settings.apply("bot", dict(self.base_env))
+        except settings.SettingsError:
+            return {"fit": False, "reason": "no_config"}
+        return failover_probe.telegram(settings.telegram_api(resolved), resolved.get("CCTV_BOT_TOKEN", ""))
 
 
 def token_rejected(token: str, lang: str | None = None) -> str:
@@ -363,6 +495,9 @@ def health() -> int:
         print(i18n.t("supervisor.status_stale", lang, age=f"{age:.0f}"))
         return 1
     state = status.get("state")
+    if state == "armed":
+        print(i18n.t("supervisor.armed", lang, role=role, holder=status.get("detail", "?")))
+        return 0
     if state != "running":
         prefix = i18n.t("supervisor.no_config", lang) if state == "no_config" else state
         print(f"{prefix}: {status.get('detail', '')}")

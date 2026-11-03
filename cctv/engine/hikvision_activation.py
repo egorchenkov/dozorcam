@@ -36,6 +36,7 @@ import re
 import secrets
 import socket
 import string
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -605,6 +606,176 @@ def ensure_onvif_user(base: str, admin: tuple[str, str], user: str, password: st
         raise ActivationError("onvif_user")
 
 
+# --- сеть камеры ----------------------------------------------------------------
+NETWORK_PATH = "/ISAPI/System/Network/interfaces/1/ipAddress"
+NETWORK_MODES = ("static", "dhcp")
+# Имя интерфейса для scope-id ссылки fe80::…%iface: только то, что даёт ядро.
+IFACE_NAME = re.compile(r"[A-Za-z0-9_.@-]{1,15}")
+
+
+@dataclass(frozen=True)
+class NetworkPlan:
+    """Что выставить камере после активации: DHCP или статика адрес/маска/шлюз."""
+    mode: str
+    address: str = ""
+    prefix: int = 0
+    gateway: str = ""
+
+    @property
+    def mask(self) -> str:
+        return str(ipaddress.ip_network(f"0.0.0.0/{self.prefix}").netmask) if self.prefix else ""
+
+    def as_dict(self) -> dict:
+        if self.mode == "dhcp":
+            return {"mode": "dhcp"}
+        return {"mode": "static", "address": self.address, "prefix": self.prefix,
+                "gateway": self.gateway}
+
+
+def network_plan(raw) -> NetworkPlan:
+    """Проверить запрошенную сеть. Камеру по ней будут искать дальше, поэтому
+    статика — только частный IPv4 с шлюзом в той же подсети."""
+    if not isinstance(raw, dict) or raw.get("mode") not in NETWORK_MODES:
+        raise ActivationError("bad_network")
+    if raw["mode"] == "dhcp":
+        return NetworkPlan("dhcp")
+    try:
+        prefix = int(raw.get("prefix"))
+        address = ipaddress.IPv4Address(str(raw.get("address") or "").strip())
+        gateway = ipaddress.IPv4Address(str(raw.get("gateway") or "").strip())
+        net = ipaddress.IPv4Network(f"{address}/{prefix}", strict=False)
+    except (TypeError, ValueError):
+        raise ActivationError("bad_network") from None
+    if not 8 <= prefix <= 30 or not address.is_private:
+        raise ActivationError("bad_network")
+    if address in (net.network_address, net.broadcast_address) or gateway not in net \
+            or gateway in (net.network_address, net.broadcast_address, address):
+        raise ActivationError("bad_network")
+    return NetworkPlan("static", str(address), prefix, str(gateway))
+
+
+def _nested_spans(text: str) -> list[tuple[int, int]]:
+    """Вложенные блоки корня (DefaultGateway, PrimaryDNS…): у них свой ipAddress."""
+    root = re.search(r"<(?![?!])[^>]*>", text)
+    spans, pos = [], root.end() if root else 0
+    opener = re.compile(r"<(\w+)\b[^>/]*>\s*<(?!/)")
+    while True:
+        match = opener.search(text, pos)
+        if match is None:
+            return spans
+        close = text.find(f"</{match.group(1)}>", match.end())
+        if close < 0:
+            return spans
+        end = close + len(match.group(1)) + 3
+        spans.append((match.start(), end))
+        pos = end
+
+
+def _top_tag(text: str, tag: str) -> re.Match | None:
+    """Первый `<tag>` уровня корня — вне вложенных блоков."""
+    spans = _nested_spans(text)
+    for match in re.finditer(rf"<{tag}>([^<]*)</{tag}>", text):
+        if not any(start <= match.start() < end for start, end in spans):
+            return match
+    return None
+
+
+def _block(text: str, name: str) -> re.Match | None:
+    return re.search(rf"<{name}\b[^>]*>(.*?)</{name}>", text, re.S)
+
+
+@dataclass(frozen=True)
+class Network:
+    mode: str      # "static" | "dhcp" | "" (не разобрано)
+    address: str = ""
+    mask: str = ""
+    gateway: str = ""
+
+
+def _parse_network(text: str) -> Network:
+    kind = _top_tag(text, "addressingType")
+    address = _top_tag(text, "ipAddress")
+    mask = _top_tag(text, "subnetMask")
+    gateway_block = _block(text, "DefaultGateway")
+    gateway = re.search(r"<ipAddress>([^<]*)</ipAddress>", gateway_block.group(1)) \
+        if gateway_block else None
+    mode = {"static": "static", "dynamic": "dhcp"}.get(kind.group(1).strip() if kind else "", "")
+    return Network(mode, address.group(1).strip() if address else "",
+                   mask.group(1).strip() if mask else "",
+                   gateway.group(1).strip() if gateway else "")
+
+
+def get_network(base: str, admin: tuple[str, str], *, timeout: float = HTTP_TIMEOUT) -> Network:
+    reply = http("GET", base, NETWORK_PATH, auth=admin, timeout=timeout)
+    if reply.status != 200:
+        raise ActivationError("network_read")
+    return _parse_network(reply.text)
+
+
+def network_body(text: str, plan: NetworkPlan) -> str:
+    """Тело PUT из живого GET: камера капризна к составу XML, меняются только значения."""
+    def put(body: str, tag: str, value: str) -> str:
+        match = _top_tag(body, tag)
+        if match is None:
+            raise ActivationError("network_read")
+        return body[:match.start(1)] + value + body[match.end(1):]
+
+    body = put(text, "addressingType", "static" if plan.mode == "static" else "dynamic")
+    if plan.mode == "dhcp":
+        return body
+    body = put(body, "ipAddress", plan.address)
+    body = put(body, "subnetMask", plan.mask)
+    gateway = _block(body, "DefaultGateway")
+    if gateway is not None:
+        inner, count = re.subn(r"(<ipAddress>)[^<]*(</ipAddress>)", rf"\g<1>{plan.gateway}\g<2>",
+                               gateway.group(1), 1)
+        if not count:
+            raise ActivationError("network_read")
+        return body[:gateway.start(1)] + inner + body[gateway.end(1):]
+    mask = _top_tag(body, "subnetMask")
+    insert = f"<DefaultGateway><ipAddress>{plan.gateway}</ipAddress></DefaultGateway>"
+    return body[:mask.end()] + insert + body[mask.end():]
+
+
+def _status_code(reply: Reply) -> str:
+    text = reply.text.strip()
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return ""
+        return str(data.get("statusCode", "")) if isinstance(data, dict) else ""
+    return _xml_values(text).get("statuscode", "") if text else ""
+
+
+def set_network(base: str, admin: tuple[str, str], plan: NetworkPlan, *,
+                timeout: float = HTTP_TIMEOUT) -> bool:
+    """`PUT …/interfaces/1/ipAddress` (addressingType static|dynamic). True — камера
+    просит перезагрузку (statusCode 7), чтобы применить сеть."""
+    reply = http("GET", base, NETWORK_PATH, auth=admin, timeout=timeout)
+    if reply.status != 200:
+        raise ActivationError("network_read")
+    reply = http("PUT", base, NETWORK_PATH, body=network_body(reply.text, plan), auth=admin,
+                 timeout=timeout)
+    code = _status_code(reply)
+    if reply.status == 200 and code in ("", "1"):
+        return False
+    if code == "7":  # rebootRequired
+        return True
+    raise ActivationError("network_refused")
+
+
+def reboot(base: str, admin: tuple[str, str], *, timeout: float = HTTP_TIMEOUT) -> None:
+    reply = http("PUT", base, "/ISAPI/System/reboot", auth=admin, timeout=timeout)
+    if reply.status != 200:
+        raise ActivationError("network_refused")
+
+
+def camera_base(host: str, port: int) -> str:
+    """Адрес ISAPI. IPv6 link-local — в скобках и с scope-id: http://[fe80::…%iface]:80."""
+    return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
+
+
 # --- SADP ----------------------------------------------------------------------
 SADP_GROUP = ("239.255.255.250", 37020)
 
@@ -613,8 +784,10 @@ def sadp_discover(*, timeout: float = 2.0) -> dict[str, dict]:
     """Hikvision SADP: устройство само говорит, активировано ли оно, и где оно.
 
     Ответ приходит и от камеры на заводском адресе в чужой подсети —
-    тогда по IPv4 её не достать, но человеку важно знать, что она есть.
-    Работает только в одной L2-сети с камерами.
+    тогда по IPv4 её не достать, но в ответе есть её IPv6 link-local: по нему
+    (с интерфейсом, на который пришёл ответ) камеру активируют и переводят в
+    свою сеть. Работает только в одной L2-сети с камерами: через туннель
+    multicast не ходит. Ключ — MAC: у новых камер заводской адрес один на всех.
     """
     probe = ('<?xml version="1.0" encoding="utf-8"?><Probe>'
              f"<Uuid>{secrets.token_hex(16).upper()}</Uuid><Types>inquiry</Types></Probe>").encode()
@@ -622,6 +795,9 @@ def sadp_discover(*, timeout: float = 2.0) -> dict[str, dict]:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+            pktinfo = getattr(socket, "IP_PKTINFO", None)
+            if pktinfo is not None:
+                sock.setsockopt(socket.IPPROTO_IP, pktinfo, 1)
             sock.settimeout(0.5)
             sock.sendto(probe, SADP_GROUP)
             import time as _time
@@ -629,18 +805,31 @@ def sadp_discover(*, timeout: float = 2.0) -> dict[str, dict]:
             deadline = _time.monotonic() + timeout
             while _time.monotonic() < deadline:
                 try:
-                    data, _addr = sock.recvfrom(65536)
+                    data, ancdata, _flags, _addr = sock.recvmsg(65536, socket.CMSG_SPACE(12))
                 except socket.timeout:
                     continue
-                parsed = parse_sadp(data)
+                parsed = parse_sadp(data, iface=_iface_from_ancdata(ancdata))
                 if parsed:
-                    found[parsed["host"]] = parsed
+                    found[parsed["mac"].lower() or parsed["ipv6"] or parsed["host"]] = parsed
     except OSError:
         return {}
     return found
 
 
-def parse_sadp(data: bytes) -> dict | None:
+def _iface_from_ancdata(ancdata) -> str:
+    """Интерфейс приёма из IP_PKTINFO (struct in_pktinfo: ipi_ifindex первым)."""
+    pktinfo = getattr(socket, "IP_PKTINFO", None)
+    for level, kind, data in ancdata or ():
+        if level == socket.IPPROTO_IP and kind == pktinfo and len(data) >= 4:
+            try:
+                name = socket.if_indextoname(int.from_bytes(data[:4], sys.byteorder))
+            except OSError:
+                return ""
+            return name if IFACE_NAME.fullmatch(name) else ""
+    return ""
+
+
+def parse_sadp(data: bytes, *, iface: str = "") -> dict | None:
     values = _xml_values(data.decode("utf-8", "replace"))
     host = values.get("ipv4address", "")
     flag = values.get("activated", "").lower()
@@ -652,6 +841,20 @@ def parse_sadp(data: bytes) -> dict | None:
         return None
     if address.version != 4 or not address.is_private or address.is_unspecified:
         return None  # опрашиваем только приватные адреса, как и WS-Discovery
+    ipv6 = ""
+    try:
+        link = ipaddress.ip_address(values.get("ipv6address", "").split("%", 1)[0].strip())
+        if link.version == 6 and link.is_link_local:
+            ipv6 = str(link)
+    except ValueError:
+        pass
     return {"host": host, "activated": flag == "true",
             "model": values.get("devicedescription") or values.get("devicetype", ""),
-            "mac": values.get("mac", "")}
+            "mac": values.get("mac", ""), "ipv6": ipv6,
+            "iface": iface if IFACE_NAME.fullmatch(iface or "") else ""}
+
+
+def link_local_host(record: dict) -> str:
+    """`fe80::…%iface` из ответа SADP — или пусто, если по IPv6 камеру не достать."""
+    ipv6, iface = record.get("ipv6") or "", record.get("iface") or ""
+    return f"{ipv6}%{iface}" if ipv6 and iface else ""

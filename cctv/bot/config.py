@@ -110,6 +110,10 @@ class Config:
     # CCTV_UPDATE_CHECK=0 — выключено. Адрес — для стенда и тестов.
     update_check: bool = True
     update_url: str = ""
+    # Панель узлов (/nodes): адрес и ключ передаёт супервизор контейнера, если у
+    # установки несколько узлов; пусто — узел один, панели нет.
+    nodes_url: str = ""
+    nodes_token: str = ""
 
     @property
     def db_path(self) -> pathlib.Path:
@@ -205,4 +209,6 @@ def load(env: dict[str, str] | None = None) -> Config:
         event_merge_sec=_int(env, "CCTV_EVENT_MERGE_SEC", 60),
         update_check=(env.get("CCTV_UPDATE_CHECK") or "1").strip().lower() not in OFF_WORDS,
         update_url=(env.get("CCTV_UPDATE_URL") or "").strip(),
+        nodes_url=(env.get("CCTV_NODES_URL") or "").strip(),
+        nodes_token=(env.get("CCTV_NODES_TOKEN") or "").strip(),
     )

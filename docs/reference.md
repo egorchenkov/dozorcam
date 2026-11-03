@@ -93,6 +93,7 @@ to the event snapshot with any text does the same.
 | `/lang en\|ru` | interface language; default `CCTV_LANG`, else the owner's Telegram language, else English |
 | `/help` | commands and buttons for the current mode |
 | `/version` | installed version and the latest release |
+| `/nodes` | nodes: where the engine and the bot run, fitness, switching a role (owner; only with several nodes, [failover](failover.md)) |
 
 ## People: owner, allowed, invited
 
@@ -216,6 +217,7 @@ cctv/engine/   bridge (HTTP API), pipeline (recording buffer, motion gate, YOLO 
 cctv/bot/      Telegram interface (python-telegram-bot): routes (delivery modes), map, cards, wizard
 cctv/i18n/     locales/<lang>.json — every string a person reads; CI checks en/ru parity
 cctv/container container supervisor (role engine | bot) and its healthcheck
+cctv/failover/ failover layer over the supervisor: nodes, armed mode, role switching (docs/failover.md)
 scripts/       install.sh, dozorcam helper, release-assets.sh, site-sync.py, sizing-bench.sh
 deploy/        config.example.toml, secrets.example.toml, reference systemd units (non-container install)
 tests/         pytest suite: engine, bot in every delivery mode, i18n gate, installer smoke test

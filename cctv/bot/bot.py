@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import contextvars
 import datetime as dt
+import ipaddress
 import json
 import os
 import re
@@ -189,7 +190,8 @@ PATH_SECRET = re.compile(r"(?i)\b(password|passwd|pwd|pass)=")
 SECRET_INPUTS = ("creds", "actpw")
 # Слово подтверждения снятия/удаления: принимается на любом языке каталога.
 CONFIRM_WORDS = {"retire": "confirm.retire", "drop": "confirm.drop",
-                 "activate": "confirm.activate", "generate": "confirm.generate"}
+                 "activate": "confirm.activate", "generate": "confirm.generate",
+                 "dhcp": "confirm.dhcp"}
 # Итог активации по камере → строка каталога.
 ACTIVATION_OUTCOME_TEXT = {"activated": "act.outcome.activated",
                            "unverified": "act.outcome.unverified",
@@ -198,7 +200,8 @@ ACTIVATION_OUTCOME_TEXT = {"activated": "act.outcome.activated",
 ACTIVATION_STAGE_TEXT = {stage: f"act.stage.{stage}" for stage in (
     "not_hikvision", "no_answer", "challenge_refused", "challenge_format", "challenge_decrypt",
     "activate_refused", "not_applied", "login_refused", "login_failed", "onvif_enable",
-    "onvif_user", "onvif_login", "stream", "internal")}
+    "onvif_user", "onvif_login", "stream", "network_read", "network_refused", "network_wait",
+    "internal")}
 # Протоколы, которыми бот активирует сам (Hikvision); прочие новые камеры
 # получают инструкцию по марке (vendor_setup в движке, docs/vendor-activation.md).
 AUTO_ACTIVATION_PROTOCOLS = ("v3", "legacy")
@@ -236,6 +239,43 @@ def keyboard_action(text: str | None) -> str | None:
         if any(label == i18n.t(key, lang) for lang in i18n.available()):
             return action
     return None
+
+
+def network_from_text(text: str, dhcp_words: set[str]) -> str | None:
+    """Сеть для камеры с заводским адресом: «dhcp» или «адрес/префикс шлюз»
+    (или «адрес маска шлюз»). Ответ — `dhcp` или `адрес/префикс@шлюз`; None — не разобрано.
+    Правила те же, что у движка (hikvision_activation.network_plan)."""
+    typed = (text or "").strip()
+    if typed.lower() in dhcp_words:
+        return "dhcp"
+    tokens = [t for t in re.split(r"[\s,;]+", typed) if t]
+    try:
+        if len(tokens) == 2 and "/" in tokens[0]:
+            iface = ipaddress.IPv4Interface(tokens[0])
+        elif len(tokens) == 3:
+            iface = ipaddress.IPv4Interface(f"{tokens[0]}/{tokens[1]}")
+        else:
+            return None
+        gateway = ipaddress.IPv4Address(tokens[-1])
+    except ValueError:
+        return None
+    net, address = iface.network, iface.ip
+    if not 8 <= net.prefixlen <= 30 or not address.is_private or gateway not in net:
+        return None
+    if {address, gateway} & {net.network_address, net.broadcast_address} or gateway == address:
+        return None
+    return f"{address}/{net.prefixlen}@{gateway}"
+
+
+def network_request(spec: str) -> dict | None:
+    """`dhcp` / `адрес/префикс@шлюз` → тело `network` запроса активации."""
+    if spec == "dhcp":
+        return {"mode": "dhcp"}
+    address, _, gateway = spec.partition("@")
+    address, _, prefix = address.partition("/")
+    if not (address and prefix.isdigit() and gateway):
+        return None
+    return {"mode": "static", "address": address, "prefix": int(prefix), "gateway": gateway}
 
 
 def confirm_words(key: str) -> set[str]:
@@ -1109,6 +1149,8 @@ class CctvBot:
             return await self._apply_threshold(payload, text)
         if head == "actok":
             return await self._confirm_activation(user_id, payload, text)
+        if head == "actnet":
+            return await self._apply_activation_network(user_id, payload, text)
         if head == "actpw":
             return await self._apply_activation_password(user_id, payload, text)
         if head == "addr":
@@ -1227,8 +1269,13 @@ class CctvBot:
         act_rows, act_lines = [], []
         if inactive:
             act_lines = [self._t("scan.inactive", count=len(inactive))]
+            # Заводской адрес вне сети узла: адреса для кнопки нет — модель и MAC.
+            factory = [c for c in inactive if c.get("link_local")]
+            act_lines += [self.factory_line(c) for c in factory]
+            if factory:
+                act_lines.append(self._t("scan.factory_note"))
             act_rows = [[InlineKeyboardButton(
-                self._t("act.button_one", label=str(c.get("label") or c["host"])[:48]),
+                self._t("act.button_one", label=self.candidate_label(c)[:48]),
                 callback_data=f"cv:act:{self.state.issue_callback(CONSOLE_CAMERA, 'act', ttl, c['host'])}")]
                 for c in inactive[:ACTIVATION_MAX_HOSTS]]
             hosts = ",".join(c["host"] for c in inactive[:ACTIVATION_MAX_HOSTS])
@@ -1270,6 +1317,19 @@ class CctvBot:
         lines += act_lines
         await self._send(console, "\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
 
+    def candidate_label(self, candidate: dict) -> str:
+        if candidate.get("link_local"):
+            return self._t("act.factory_label", model=candidate.get("model") or "Hikvision",
+                           mac=candidate.get("mac") or "?")
+        return str(candidate.get("label") or candidate["host"])
+
+    def factory_line(self, candidate: dict) -> str:
+        """Новая Hikvision, которую IPv4-развёртка не достала: заводской адрес, модель, MAC."""
+        key = "scan.factory" if candidate.get("foreign_subnet") else "scan.factory_unreachable"
+        return self._t(key, host=candidate.get("factory_host") or candidate["host"],
+                       model=candidate.get("model") or "Hikvision",
+                       mac=candidate.get("mac") or "?")
+
     def setup_instruction(self, brand: str) -> str:
         """Как задать первый пароль камере этой марки вручную."""
         key = f"setup.{brand}" if brand in MANUAL_SETUP_BRANDS else "setup.generic"
@@ -1293,6 +1353,12 @@ class CctvBot:
             lines.append("")
             lines.append(self._t("scan.manual_brand", brand=name, hosts=hosts))
             lines.append(self.setup_instruction(brand))
+        factory = [c for c in cameras if c.get("factory_host")]
+        if factory:
+            # SADP её слышал, а достать нечем: ни IPv4, ни IPv6 link-local.
+            lines.append("")
+            lines += [self.factory_line(c) for c in factory]
+            lines.append(self._t("scan.factory_no_link"))
         lines.append("")
         lines.append(self._t("scan.manual_next"))
         rows = [[InlineKeyboardButton(
@@ -1441,17 +1507,38 @@ class CctvBot:
     async def _confirm_activation(self, user_id: int | None, hosts: str, text: str) -> str:
         if text.strip().lower() not in confirm_words(CONFIRM_WORDS["activate"]):
             return self._t("act.cancelled")
+        if any(":" in host for host in hosts.split(",")):
+            # Заводской адрес чужой подсети (fe80::…%iface): сперва — какую сеть
+            # выставить после активации, пароль — последним, как и без этого шага.
+            return self._ask_activation_network(user_id, hosts)
         self.state.expect_input(user_id, CONSOLE_CAMERA, f"actpw|{hosts}", INPUT_TTL_SEC)
         # Слово подтверждения пришло сообщением: просьба о пароле — ответом на него.
         return self._t("act.ask_password", word=self._t(CONFIRM_WORDS["generate"]))
 
-    async def _apply_activation_password(self, user_id: int | None, hosts: str, text: str) -> str:
+    def _ask_activation_network(self, user_id: int | None, hosts: str, problem: str = "") -> str:
+        self.state.expect_input(user_id, CONSOLE_CAMERA, f"actnet|{hosts}", INPUT_TTL_SEC)
+        ask = self._t("act.ask_network", word=self._t(CONFIRM_WORDS["dhcp"]))
+        return f"{self._t(problem)}\n{ask}" if problem else ask
+
+    async def _apply_activation_network(self, user_id: int | None, hosts: str, text: str) -> str:
+        spec = network_from_text(text, confirm_words(CONFIRM_WORDS["dhcp"]))
+        if spec is None:
+            return self._ask_activation_network(user_id, hosts, "act.network_bad")
+        if spec != "dhcp" and sum(":" in host for host in hosts.split(",")) > 1:
+            # Один статический адрес на несколько камер — конфликт адресов.
+            return self._ask_activation_network(user_id, hosts, "act.network_static_many")
+        self.state.expect_input(user_id, CONSOLE_CAMERA, f"actpw|{hosts};{spec}", INPUT_TTL_SEC)
+        return self._t("act.ask_password", word=self._t(CONFIRM_WORDS["generate"]))
+
+    async def _apply_activation_password(self, user_id: int | None, payload: str, text: str) -> str:
         """Пароль admin для пакета: свой или «сгенерировать» — тогда его создаёт мост."""
+        hosts, _, spec = payload.partition(";")
         typed = (text or "").strip()
         password = None if typed.lower() in confirm_words(CONFIRM_WORDS["generate"]) else typed
         try:
             started = await asyncio.to_thread(self.bridge.activation_start,
-                                              hosts.split(","), password)
+                                              hosts.split(","), password,
+                                              network_request(spec) if spec else None)
         except BridgeError as exc:
             return self._error(exc.code)
         finally:
@@ -1460,8 +1547,12 @@ class CctvBot:
             code = str(started.get("error_code") or "")
             if code in ACTIVATION_PASSWORD_ERRORS:
                 # Камеры не тронуты: правила проверены до сети. Пробуем снова.
-                self.state.expect_input(user_id, CONSOLE_CAMERA, f"actpw|{hosts}", INPUT_TTL_SEC)
+                self.state.expect_input(user_id, CONSOLE_CAMERA, f"actpw|{payload}", INPUT_TTL_SEC)
                 return self._t(f"act.{code}") + "\n" + self._t("act.password_rules")
+            if code in ("bad_network", "network_static_many"):
+                return self._ask_activation_network(
+                    user_id, hosts, "act.network_static_many" if code == "network_static_many"
+                    else "act.network_bad")
             if code == "busy":
                 return self._t("act.busy")
             return self._t("act.not_started")
@@ -1486,8 +1577,13 @@ class CctvBot:
             return
         await self._finish_activation(status)
 
+    @staticmethod
+    def _activation_host(result: dict) -> str:
+        """Как называть камеру в итоге: новый адрес, если её перевели в свою сеть."""
+        return str(result.get("address") or result.get("host") or "")
+
     def _activation_line(self, result: dict, added: dict[str, str]) -> str:
-        host = str(result.get("host") or "")
+        host = self._activation_host(result)
         outcome = str(result.get("outcome") or "failed")
         line = self._t(ACTIVATION_OUTCOME_TEXT.get(outcome, "act.outcome.failed"), host=host)
         stage = str(result.get("stage") or "")
@@ -1515,7 +1611,7 @@ class CctvBot:
             token = str(result.get("probe_token") or "")
             if result.get("outcome") != "activated" or not token:
                 continue
-            host = str(result.get("host") or "")
+            host = self._activation_host(result)
             summary = result.get("summary") or {}
             title = f"{summary.get('model') or result.get('model') or 'Hikvision'} {host}"[:64]
             camera_id = unique_camera_id(f"hik-{host.replace('.', '-')}", existing)
@@ -1532,7 +1628,7 @@ class CctvBot:
         password = status.get("password")
         if password:
             text = self._t("act.password_dm", password=password,
-                           hosts=", ".join(str(r.get("host")) for r in results
+                           hosts=", ".join(self._activation_host(r) for r in results
                                            if r.get("outcome") in ("activated", "unverified")))
             delivered = await self.notify_owner(text)
             password = text = None
@@ -2898,6 +2994,8 @@ class CctvBot:
                  self._t("help.commands")]
         lines += [f"/{name} — {self._t(f'command.{name}')}" for name in MENU_COMMANDS
                   if name not in ("help", "setup") or (name == "setup" and not flat)]
+        if getattr(self.cfg, "nodes_url", ""):
+            lines.append(f"/nodes — {self._t('command.nodes')}")
         if not self.is_owner(user_id):
             lines += ["", self._t("help.owner_only")]
         lines += ["", self._t("help.version", version=__version__)]

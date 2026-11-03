@@ -3,6 +3,40 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [SemVer](https://semver.org/).
 Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
+## [Unreleased]
+
+## [0.4.0] — 2026-11-04
+
+Failover, step 1 of 5: a spare node on standby and switching roles from the bot. Also: `/add`
+activates a new Hikvision waiting on its factory address in a foreign subnet.
+
+### Fixed
+- `/add` shows a new Hikvision on its factory address in a foreign subnet (192.168.1.64 while
+  the engine host is in another network) instead of silently dropping it: SADP had heard it, but
+  the IPv4 port check cannot reach that subnet. The camera is listed as "factory address,
+  foreign subnet" with its model and MAC, as are several new cameras sharing one factory address.
+
+### Added
+- Such a camera is activated over its IPv6 link-local address from the SADP reply
+  (`http://[fe80::…%interface]`), and then, by your choice, gets DHCP or a static
+  address/mask/gateway over the same path; the bot then adds it by its new address like any
+  other camera. Works only with the engine in the same L2 network as the cameras: not through a
+  tunnel (VPN) — see [docs/cameras.md](docs/cameras.md).
+- Several nodes: the same pair of containers (engine + bot) from the same image and the same
+  configuration directory on more than one machine, described in a new `[failover]` section of
+  `config.toml`; each node only sets its name, `CCTV_NODE` in `.env`. Without the section
+  nothing changes. See [docs/failover.md](docs/failover.md).
+- Armed mode: on a node that does not hold a role, the containers run, but the engine opens no
+  RTSP/ONVIF session to the cameras and the bot does not poll Telegram; the healthcheck stays
+  green and says which node holds the role.
+- Fitness check once a minute: a bare TCP connect to each camera's stream port (nothing is
+  sent) and `getMe` to the Bot API.
+- `/nodes` (owner): which node holds the engine and the bot, which are armed and fit, when they
+  were last checked, and buttons that move a role to another node and back. The old node stops
+  the role before the new one starts it, the role's state directory moves with it, process
+  memory does not (the role starts as after a restart); if the new node fails, the role goes
+  back.
+
 ## [0.3.2] — 2026-10-25
 
 Patch release for the `/add` wizard: registries on DNS names, web interfaces mistaken for

@@ -68,6 +68,11 @@ ACTIVATION_VAULT = "activation-vault.json"
 # ONVIF после включения поднимается не мгновенно: проба потока — с паузами.
 ACTIVATION_PROBE_ATTEMPTS = 3
 ACTIVATION_PROBE_PAUSE_SEC = 3.0
+# Новая Hikvision на заводском адресе чужой подсети: активация и смена сети идут
+# по её IPv6 link-local из ответа SADP; новый адрес (статика или DHCP) камера
+# применяет не сразу, а после rebootRequired — и вовсе через перезагрузку.
+NETWORK_WAIT_SEC = 120.0
+NETWORK_POLL_SEC = 3.0
 PROVISION_SOCKET = os.environ.get("CCTV_PROVISION_SOCKET", "/run/cctv-provision.sock")
 DISCOVERY_NETWORKS = os.environ.get("CCTV_DISCOVERY_NETWORKS", "")
 STORAGE_BUDGET_BYTES = int(os.environ.get("CCTV_STORAGE_BUDGET_BYTES", str(8 * 1024 ** 3)))
@@ -178,6 +183,19 @@ def _lookup_addresses(name: str) -> frozenset[str]:
     except (OSError, UnicodeError):
         return frozenset()
     return frozenset(str(info[4][0]) for info in infos)
+
+
+def activation_host(raw) -> str | None:
+    """Адрес камеры для активации: частный IPv4 или IPv6 link-local с интерфейсом."""
+    try:
+        address = ipaddress.ip_address(str(raw or "").strip())
+    except ValueError:
+        return None
+    if address.version == 4:
+        return str(address) if address.is_private or address.is_loopback else None
+    if address.is_link_local and address.scope_id and hik.IFACE_NAME.fullmatch(address.scope_id):
+        return str(address)
+    return None
 
 
 @dataclass
@@ -424,9 +442,14 @@ class Bridge:
             try:
                 extra = discovery.ws_discover()
                 # SADP слышит и новую Hikvision, у которой ONVIF ещё выключен.
-                extra += [host for host in hik.sadp_discover() if host not in extra]
+                sadp = list(hik.sadp_discover().values())
+                for record in sadp:
+                    if record["host"] not in extra:
+                        extra.append(record["host"])
                 found = discovery.scan(parsed, extra_hosts=extra)
-                result = {"status": "done", "candidates": [c.as_dict() for c in found]}
+                candidates = [c.as_dict() for c in found]
+                candidates += self._factory_candidates(sadp, found, parsed)
+                result = {"status": "done", "candidates": candidates}
             except Exception as exc:  # опрос сети не должен ронять мост
                 failed = discovery.DiscoveryError("scan_failed", reason=type(exc).__name__).reply()
                 result = {"status": "failed", "candidates": [], "error": failed["error"],
@@ -440,6 +463,43 @@ class Bridge:
         threading.Thread(target=worker, daemon=True).start()
         return {"ok": True, "scan_id": scan_id, "status": "running",
                 "networks": [str(n) for n in parsed]}
+
+    def _factory_candidates(self, sadp: list[dict], found, networks) -> list[dict]:
+        """Неактивированные Hikvision, которых развёртка по IPv4 не достала.
+
+        Обычно это заводской адрес в чужой подсети (192.168.1.64 при другой
+        сети узла) или несколько новых камер на одном заводском адресе. TCP до
+        них не доходит, но SADP-ответ уже назвал модель, MAC и IPv6 link-local:
+        по нему кандидат активируется, а `host` кандидата — `fe80::…%iface`.
+        Без link-local кандидат остаётся «ждёт настройки» — с инструкцией.
+        """
+        reachable = {c.host for c in found}
+        per_host: dict[str, int] = {}
+        for record in sadp:
+            per_host[record["host"]] = per_host.get(record["host"], 0) + 1
+        candidates = []
+        for record in sadp:
+            host = record["host"]
+            if record.get("activated") or (host in reachable and per_host[host] == 1):
+                continue
+            address = ipaddress.ip_address(host)
+            foreign = not any(address in net for net in networks)
+            link = hik.link_local_host(record)
+            status = (hik.activation_status(hik.camera_base(link, self.activation_port),
+                                            timeout=discovery.SCAN_TIMEOUT * 3)
+                      if link else hik.Status(None))
+            if status.activated is True:
+                continue  # SADP отстал: камеру уже активировали
+            model = str(record.get("model") or "")
+            candidates.append({
+                "host": link if status.activated is False else host, "ports": [],
+                "vendor": "hikvision", "brand": "hikvision", "model": model, "onvif": False,
+                "label": " · ".join(p for p in (host, f"hikvision {model}".strip()) if p),
+                "activated": False,
+                "activation": status.protocol if status.activated is False else "",
+                "factory_host": host, "mac": str(record.get("mac") or ""),
+                "foreign_subnet": foreign, "link_local": status.activated is False})
+        return candidates
 
     def scan_status(self, scan_id: str) -> dict:
         # Реестр меняется только перезапуском цепочки, поэтому соответствие
@@ -590,14 +650,22 @@ class Bridge:
             return {"ok": False, "error_code": "bad_hosts"}
         clean: list[str] = []
         for host in hosts:
+            address = activation_host(host)
+            if address is None:
+                return {"ok": False, "error_code": "bad_hosts"}
+            if address not in clean:
+                clean.append(address)
+        # Камере с заводским адресом чужой подсети нужна своя сеть: без неё она
+        # останется недоступной по IPv4 и после активации.
+        plan = None
+        links = [h for h in clean if ":" in h]
+        if links:
             try:
-                address = ipaddress.ip_address(str(host).strip())
-            except ValueError:
-                return {"ok": False, "error_code": "bad_hosts"}
-            if address.version != 4 or not (address.is_private or address.is_loopback):
-                return {"ok": False, "error_code": "bad_hosts"}
-            if str(address) not in clean:
-                clean.append(str(address))
+                plan = hik.network_plan(request.get("network"))
+            except hik.ActivationError:
+                return {"ok": False, "error_code": "bad_network"}
+            if plan.mode == "static" and len(links) > 1:
+                return {"ok": False, "error_code": "network_static_many"}
         generated = request.get("generate") is True
         password = hik.generate_password() if generated else request.get("password")
         problem = hik.password_problem(password if isinstance(password, str) else "")
@@ -614,15 +682,16 @@ class Bridge:
             job = {"status": "running", "started": time.time(), "hosts": clean,
                    "results": [], "password": password, "generated": generated}
             self._activations[job_id] = job
-        threading.Thread(target=self._run_activation, args=(job_id, clean, password),
+        threading.Thread(target=self._run_activation, args=(job_id, clean, password, plan),
                          daemon=True).start()
         return {"ok": True, "activation_id": job_id, "status": "running", "hosts": clean}
 
-    def _run_activation(self, job_id: str, hosts: list[str], password: str) -> None:
+    def _run_activation(self, job_id: str, hosts: list[str], password: str,
+                        plan: hik.NetworkPlan | None = None) -> None:
         keys = self.activation_keys()
         for host in hosts:
             try:
-                result = self._activate_one(host, password, keys)
+                result = self._activate_one(host, password, keys, plan if ":" in host else None)
             except Exception as exc:  # одна камера не должна оборвать пакет
                 result = {"host": host, "outcome": "failed", "stage": "internal",
                           "detail": type(exc).__name__}
@@ -632,13 +701,18 @@ class Bridge:
             job = self._activations[job_id]
             job["status"], job["finished"] = "done", time.time()
 
-    def _activate_one(self, host: str, password: str, keys) -> dict:
-        """Одна камера: состояние → хранилище → активация → один логин → ONVIF → поток.
+    def _activate_one(self, host: str, password: str, keys,
+                      plan: hik.NetworkPlan | None = None) -> dict:
+        """Одна камера: состояние → хранилище → активация → один логин → [сеть] →
+        ONVIF → поток.
 
+        `host` — IPv4 или `fe80::…%iface` (заводской адрес в чужой подсети):
+        тогда после входа камере выставляется сеть `plan`, а поток ищется уже
+        по её новому IPv4 — дальше это обычная камера развёртки.
         Повторов нет нигде, где камера считает неудачные входы: неверный
         пароль дважды — шаг к блокировке, а камера здесь новая и чужая.
         """
-        base = f"http://{host}:{self.activation_port}"
+        base = hik.camera_base(host, self.activation_port)
         result: dict = {"host": host, "outcome": "failed", "stage": "", "onvif": False,
                         "stream": False}
         status = hik.activation_status(base)
@@ -674,6 +748,16 @@ class Bridge:
         self._vault_put(host, state="activated", model=info.get("model", ""))
         result.update(outcome="activated", model=info.get("model", ""))
         admin = (hik.ADMIN_USER, password)
+        address = host
+        if plan is not None:
+            try:
+                address = self._move_to_network(base, admin, plan)
+            except hik.ActivationError as exc:
+                self._vault_put(host, state="network_failed")
+                result["stage"] = exc.code
+                return result
+            result["address"] = address
+            self._vault_put(host, state="network_ready", address=address, network=plan.mode)
         try:
             hik.enable_onvif(base, admin)
             hik.ensure_onvif_user(base, admin, hik.ONVIF_USER, onvif_password)
@@ -685,8 +769,9 @@ class Bridge:
         found, failure = None, "stream"
         for attempt in range(ACTIVATION_PROBE_ATTEMPTS):
             try:
-                found = discovery.probe(host, hik.ONVIF_USER, onvif_password,
-                                        service_url=f"{base}/onvif/device_service",
+                found = discovery.probe(address, hik.ONVIF_USER, onvif_password,
+                                        service_url=hik.camera_base(address, self.activation_port)
+                                        + "/onvif/device_service",
                                         vendor_hint="hikvision")
                 break
             except discovery.DiscoveryError as exc:
@@ -709,6 +794,40 @@ class Bridge:
         if not found.verified:
             result["stage"] = "stream"
         return result
+
+    def _move_to_network(self, base: str, admin: tuple[str, str], plan: hik.NetworkPlan) -> str:
+        """Выставить сеть по link-local и дождаться её: вернуть новый IPv4 камеры.
+
+        Ответ на PUT может потеряться (камера меняет адрес на лету), поэтому
+        верим только повторному чтению по тому же link-local — он не меняется."""
+        before = hik.get_network(base, admin)
+        reboot = False
+        try:
+            reboot = hik.set_network(base, admin, plan)
+        except hik.ActivationError as exc:
+            if exc.code != "no_answer":
+                raise
+        if reboot:
+            try:
+                hik.reboot(base, admin)
+            except hik.ActivationError as exc:
+                if exc.code != "no_answer":
+                    raise
+        deadline = time.monotonic() + NETWORK_WAIT_SEC
+        while True:
+            try:
+                current = hik.get_network(base, admin)
+            except hik.ActivationError:
+                current = None
+            if current is not None and current.mode == plan.mode:
+                if plan.mode == "static" and current.address == plan.address:
+                    return plan.address
+                if plan.mode == "dhcp" and current.address != before.address \
+                        and activation_host(current.address) not in (None, "0.0.0.0"):
+                    return current.address
+            if time.monotonic() >= deadline:
+                raise hik.ActivationError("network_wait")
+            time.sleep(NETWORK_POLL_SEC)
 
     def activation_status(self, job_id: str) -> dict:
         """Итог по каждой камере. Пароль отдаётся один раз и только если хоть

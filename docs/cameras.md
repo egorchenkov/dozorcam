@@ -75,3 +75,15 @@ of that brand. Please report what works for you (issue or pull request to this f
 A new camera without a password (first setup) is a separate step: Hikvision is activated
 from `/add` itself; for the other brands the bot shows short brand instructions — see
 [vendor-activation.md](vendor-activation.md).
+
+A new Hikvision on its factory address 192.168.1.64 in a subnet the engine host is not in is
+still found: it answers SADP with its model, MAC and IPv6 link-local address. `/add` shows it
+marked "factory address, foreign subnet", activates it over that link-local address
+(`http://[fe80::…%interface]`) and, by your choice, sets DHCP or a static address/mask/gateway
+(`PUT /ISAPI/System/Network/interfaces/1/ipAddress`); after that it is added by its new address
+like any other camera.
+
+**Limitation:** this works only when the engine is in the same L2 network (the same switch or
+VLAN) as the cameras. SADP is multicast and IPv6 link-local is not routed, so for a remote site
+behind a tunnel (VPN) neither reaches the camera — set its address there with SADP Tool or the
+camera's web interface first.

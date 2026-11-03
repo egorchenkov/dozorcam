@@ -15,6 +15,7 @@ from . import config
 from .bot import CctvBot
 from .bridge import Bridge
 from .events import EventServer
+from .nodes import NodesPanel
 from .state import State
 
 HOUSEKEEPING_INTERVAL_SEC = 3600
@@ -69,7 +70,7 @@ async def _amain() -> int:
                    .read_timeout(TG_TIMEOUT_SEC).write_timeout(TG_TIMEOUT_SEC).build())
     core = CctvBot(cfg, state, bridge, application.bot, log=log.info)
 
-    register_handlers(application, core, state)
+    register_handlers(application, core, state, NodesPanel(cfg.nodes_url, cfg.nodes_token))
 
     loop = asyncio.get_running_loop()
     server = None
@@ -168,9 +169,10 @@ async def _amain() -> int:
     return 0
 
 
-def register_handlers(application, core, state) -> None:
+def register_handlers(application, core, state, panel: NodesPanel | None = None) -> None:
     """Обработчики Telegram. Отдельно от _amain: сквозной прогон мастера
     на стенде кормит те же обработчики синтетическими апдейтами."""
+    from . import nodes
     from telegram import Update
     from telegram.ext import (CallbackQueryHandler, ChatMemberHandler, CommandHandler,
                               MessageHandler, TypeHandler, filters)
@@ -251,6 +253,36 @@ def register_handlers(application, core, state) -> None:
             return
         await reply(message, await core.on_invite(
             user.id, chat_id=chat.id if chat else None, chat_type=chat.type if chat else "private"))
+
+    panel = panel or NodesPanel()
+
+    async def on_nodes(update, _ctx):
+        """/nodes — панель узлов от супервизора; бот её только показывает (владельцу)."""
+        user, message = update.effective_user, update.effective_message
+        if not core.allowed(user.id if user else None):
+            return
+        if not core.is_owner(user.id):
+            return await reply(message, core._t("access.owner_only"))
+        if not panel.enabled:
+            return await reply(message, core._t("nodes.not_configured"))
+        view = await panel.view(core.lang)
+        if view is None:
+            return await reply(message, core._t("nodes.unavailable"))
+        await message.reply_text(view["text"], reply_markup=nodes.markup(view))
+
+    async def on_nodes_button(update, _ctx):
+        query = update.callback_query
+        user_id = query.from_user.id if query.from_user else None
+        if not core.is_owner(user_id):
+            return await query.answer(core._t("access.owner_only"))
+        view = await panel.press(query.data or "", core.lang) if panel.enabled else None
+        if view is None:
+            return await query.answer(core._t("nodes.unavailable"), show_alert=True)
+        try:
+            await query.edit_message_text(view["text"], reply_markup=nodes.markup(view))
+        except Exception as exc:  # тот же текст («не изменено») — не повод молчать в ответе
+            log.info("панель узлов не перерисована: %s", type(exc).__name__)
+        await query.answer(str(view.get("toast") or "")[:200])
 
     async def on_membership(update, _ctx):
         change = update.my_chat_member
@@ -340,9 +372,11 @@ def register_handlers(application, core, state) -> None:
     application.add_handler(CommandHandler("invite", on_invite))
     application.add_handler(CommandHandler("help", on_help))
     application.add_handler(CommandHandler("version", on_version))
+    application.add_handler(CommandHandler("nodes", on_nodes))
     application.add_handler(ChatMemberHandler(on_membership, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE, on_migrate))
     application.add_handler(CallbackQueryHandler(on_button, pattern=r"^cv:"))
+    application.add_handler(CallbackQueryHandler(on_nodes_button, pattern=r"^nd:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
 
