@@ -5,6 +5,29 @@ Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-04
+
+Failover, step 2 of 5: one configuration for all nodes — the node that holds a role hands its
+configuration to the armed ones.
+
+### Added
+- The node holding a role hands out its configuration directory (`config.toml`,
+  `secrets.toml`, `cameras.json`) and the settings made from the chat (camera registry,
+  paused and retired cameras, passwords of activated cameras, the chosen model, a manual
+  threshold) to the armed nodes over the agents' mutual-TLS link: within seconds after a
+  change, and every `check_sec` for a node that was down. A spare node needs only the
+  `[failover]` section and the shared `secret`; after a switch the new active node runs on the
+  received configuration. See [docs/failover.md](docs/failover.md#one-configuration-for-all-nodes).
+- A received revision on which the node would not start (broken TOML, unknown section, the
+  node missing from `[failover]`) is rejected; an edit is handed out only from the node holding
+  the role and only on top of the current revision, so an outdated directory of a former spare
+  node never overwrites the real one.
+
+### Changed
+- With a `[failover]` section the handed-out configuration is stronger than the node's `.env`;
+  only node-local keys (name, paths, ports, buffer sizes, own certificates, own network) keep
+  the node's value. Single-node installs are unchanged.
+
 ## [0.4.0] — 2026-11-04
 
 Failover, step 1 of 5: a spare node on standby and switching roles from the bot. Also: `/add`

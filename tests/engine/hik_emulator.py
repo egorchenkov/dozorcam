@@ -74,7 +74,7 @@ class HikEmulator:
         self._pending_network: dict | None = None
         self.network_puts: list[str] = []
         self.reboots = 0
-        self.rtsp_port = free_port()
+        self.rtsp_port = 0  # порт RTSP занимает start() на своём адресе
         self.activated = False
         self.admin_password: str | None = None
         self.onvif_enabled = False
@@ -123,7 +123,10 @@ class HikEmulator:
         self.http = self.servers[0]
         self.rtsp = socket.socket()
         self.rtsp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.rtsp.bind((self.ip, self.rtsp_port))
+        # Порт 0 на своём адресе, а не free_port(): тот ищет свободный на 127.0.0.1, а на
+        # 127.0.0.X этот номер может уже держать HTTP эмулятора (Address already in use в CI).
+        self.rtsp.bind((self.ip, 0))
+        self.rtsp_port = self.rtsp.getsockname()[1]
         self.rtsp.listen(8)
         threading.Thread(target=self._rtsp_loop, daemon=True).start()
         return self

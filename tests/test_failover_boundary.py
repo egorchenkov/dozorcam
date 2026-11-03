@@ -7,7 +7,8 @@
   что слой подставляет процессам роли в окружение (адрес соседней роли, панель).
   Новая связь супервизора со слоем — осознанная правка этого списка, а не случайность.
 * Процессы роли получают от слоя только переменные окружения; бот — адрес и ключ
-  панели /nodes, ни имени узла, ни списка соседей.
+  панели /nodes, ни имени узла, ни списка соседей. Раздаваемый конфиг (share.py)
+  доходит до роли тоже окружением — каталогом конфига CCTV_CONFIG_DIR.
 * Настройки слоя — только из раздаваемого каталога конфига (config.toml,
   secrets.toml); из окружения узла — одно его имя CCTV_NODE. Новый ключ раздела,
   не внесённый в схему, конфиг отвергает, а каждый ключ схемы описан в docs.
@@ -93,9 +94,18 @@ class BoundaryTest(unittest.TestCase):
         self.assertEqual(set(), used - SUPERVISOR_USES, "супервизор берёт у слоя больше, чем «включись/замри»")
 
     def test_layer_gives_role_processes_only_environment(self) -> None:
+        from cctv.failover import share
+
         names = set()
         for path in LAYER.glob("*.py"):
-            names.update(re.findall(r"\"(CCTV_[A-Z_]+)\"", path.read_text()))
+            found = set(re.findall(r"\"(CCTV_[A-Z_]+)\"", path.read_text()))
+            if path.name == "share.py":
+                # Здесь только классификация узловых ключей; роли модуль подменяет
+                # одно — каталог конфига (effective_env).
+                self.assertLessEqual(found, share.NODE_LOCAL)
+                self.assertIn("CCTV_CONFIG_DIR", found)
+                continue
+            names.update(found)
         self.assertEqual(CHILD_ENV | {"CCTV_NODE"}, names)
         bot_names = set(re.findall(r"CCTV_NODES?_[A-Z]+", (PACKAGE / "bot" / "config.py").read_text()))
         self.assertEqual({"CCTV_NODES_URL", "CCTV_NODES_TOKEN"}, bot_names)

@@ -22,6 +22,9 @@
 супервизором, а не внутри движка и бота: агент слоя отвечает «включись или
 замри». Замер — процессы роли остановлены, контейнер жив (state «armed»,
 healthcheck зелёный); включился — роль стартует заново, как после рестарта.
+С разделом [failover] роль работает на раздаваемом конфиге (копия в state,
+её ведёт агент), а не на локальном каталоге узла; новая ревизия — как правка
+конфига: перезапуск роли.
 """
 from __future__ import annotations
 
@@ -39,6 +42,7 @@ import urllib.request
 
 from . import failover, i18n, settings
 from .failover import probe as failover_probe
+from .failover import share as failover_share
 
 STATUS_PATH = pathlib.Path(os.environ.get("CCTV_SUPERVISOR_STATUS", "/run/cctv/supervisor.json"))
 RUN_DIR = STATUS_PATH.parent
@@ -149,8 +153,10 @@ class Supervisor:
     def __init__(self) -> None:
         # Пустая CCTV_* (compose подставляет "" для незаполненной строки .env) — то же,
         # что не заданная: иначе она перекрыла бы значение из config.toml.
-        self.base_env = {key: value for key, value in os.environ.items()
+        self.node_env = {key: value for key, value in os.environ.items()
                          if value or not key.startswith("CCTV_")}
+        # Окружение роли: окружение узла, а с [failover] — поверх раздаваемого конфига.
+        self.base_env = failover_share.effective_env(self.role, self.node_env)
         self.children: list[Child] = []
         self.stopping = False
         self.last_problem = ""
@@ -192,7 +198,7 @@ class Supervisor:
         write_status(state, message, role=self.role)
 
     def fingerprint(self) -> tuple:
-        return config_fingerprint(self.base_env)
+        return config_fingerprint(self.node_env, failover_share.watched(self.node_env))
 
     def wait_config_change(self, fingerprint: tuple, state: str, message: str) -> None:
         active = self.layer.active() if self.layer is not None else None
@@ -224,7 +230,8 @@ class Supervisor:
         self.detach_layer()
         if cfg is None:
             return None
-        agent = failover.Agent(cfg, self.role, settings.state_dir(self.base_env), self.probe, log=log)
+        agent = failover.Agent(cfg, self.role, settings.state_dir(self.base_env), self.probe, log=log,
+                               local_dir=settings.config_dir(self.node_env))
         try:
             agent.start()
         except OSError as exc:
@@ -270,7 +277,10 @@ class Supervisor:
         try:
             while not self.stopping:
                 fingerprint = self.fingerprint()
+                self.base_env = failover_share.effective_env(self.role, self.node_env)
                 problem = self.attach_layer()
+                if self.fingerprint() != fingerprint:
+                    continue  # агент при старте принял или выпустил ревизию конфига
                 if problem:
                     self.wait_config_change(fingerprint, *problem)
                     continue
@@ -355,7 +365,8 @@ class EngineSupervisor(Supervisor):
         self.guard = self.base_env.get("CCTV_RETENTION_GUARD", "")
 
     def fingerprint(self) -> tuple:
-        return config_fingerprint(self.base_env, (registry_file(self.base_env),))
+        return config_fingerprint(self.node_env, (*failover_share.watched(self.node_env),
+                                                  registry_file(self.node_env)))
 
     def probe(self) -> dict:
         """Камеры реестра достижимы по TCP (без RTSP/ONVIF): реестр state, иначе исходник."""

@@ -4,8 +4,9 @@ Dozorcam can run on several machines at once so that a spare one takes over the 
 the bot. This is a separate layer on top of the container supervisor: the engine and the bot
 themselves know nothing about other nodes. Russian: [failover.ru.md](failover.ru.md).
 
-Status: **step 1 of 5** — standby mode and manual switching from the bot. Automatic takeover
-when a node dies comes in later steps.
+Status: **step 2 of 5** — standby mode, manual switching from the bot and one configuration
+for all nodes (the active node hands it to the armed ones). Automatic takeover when a node
+dies comes in later steps.
 
 ## Node and roles
 
@@ -31,8 +32,9 @@ Without a `[failover]` section there is no layer: a single node, both roles alwa
 
 ## Configuration
 
-Everything about nodes lives in the shared configuration directory, so every node reads the
-same file. The only per-node setting is its name.
+Everything about nodes lives in the configuration directory, and the active node hands that
+directory to the others (see [One configuration for all nodes](#one-configuration-for-all-nodes)),
+so every node runs on the same files. The only per-node setting is its name.
 
 ```toml
 # config.toml
@@ -115,8 +117,65 @@ Only the role's **state directory on disk**: the camera registry and calibration
 engine, the bot's database (topics, owner, people). The **memory of the processes is lost**
 on every switch — the new node starts the role from scratch, as after a restart: the
 recording buffer, an unfinished `/add` dialog, pending events are not carried over. The
-node's own files stay where they are: its role assignment (`failover.json`) and the
-detector's daily diagnostics (`diag/`).
+node's own files stay where they are: its role assignment (`failover.json`), its copy of the
+handed-out configuration (`failover-config/`, it has its own revisions) and the detector's
+daily diagnostics (`diag/`). The configuration and the settings made from the chat are on the
+new node already — the active node handed them out while it was armed.
+
+## One configuration for all nodes
+
+The node that holds a role hands its configuration to the armed nodes, so a spare node is
+always ready to take over with the same cameras and settings. Two things are handed out,
+both over the agents' link (mutual TLS with the installation's CA between machines, every
+request signed with `secret`), without the engine or the bot taking part:
+
+- **the configuration directory** — `config.toml`, `secrets.toml`, `cameras.json`. Every
+  agent keeps a copy in its state directory (`failover-config/`) with a revision number and
+  runs its role on that copy, not on the node's own directory;
+- **settings made from the chat** — files in the engine's state that the bot changes through
+  the bridge: `cameras.json` (the camera registry), `overrides.json` (paused and retired
+  cameras), `activation-vault.json` (passwords of activated cameras), `person_model.json`
+  (the chosen model), `person_threshold.override.json` (a manual threshold). An armed node
+  writes them only while the role is not running there.
+
+A change reaches the armed nodes within seconds (the holder checks its files every 2 s and
+sends the change at once); a node that was down catches up at the next check (`check_sec`).
+`/nodes` keeps showing which node holds each role.
+
+**Where to edit.** Edit the configuration directory on the node that holds the role. An
+edit on an armed node is not handed out (the log says so). A new node needs only the
+`[failover]` section in `config.toml` and the `secret` in `secrets.toml` — everything else
+arrives from the active node. After a switch the new active node keeps running on the
+received configuration; its own directory is handed out only if it matched the current
+revision before the edit — an outdated or incomplete directory of a former spare node never
+overwrites the real one. To edit there, first take the current files from the copy:
+
+```sh
+docker compose exec engine cat /var/lib/cctv/state/failover-config/config.toml > config/config.toml
+docker compose exec engine cat /var/lib/cctv/state/failover-config/secrets.toml > config/secrets.toml
+docker compose exec engine cat /var/lib/cctv/state/failover-config/cameras.json > config/cameras.json
+chmod 600 config/secrets.toml
+```
+
+A received revision on which the node would not start (broken TOML, unknown section, this
+node missing from `[failover]`) is rejected — the node keeps the previous one and stays
+reachable to receive a fix. The certificate files (`tls_*`) and `secret` are not something
+the link can change for itself: the link needs them to work, so change them on every node.
+
+**Node environment.** With a `[failover]` section the handed-out configuration is stronger
+than the node's own environment (`.env`): an outdated value in a spare node's `.env` does
+not override what the active node handed out. Only node-local keys keep the node's own
+value:
+
+- node name and paths inside the container: `CCTV_NODE`, `CCTV_CONFIG_DIR`, `CCTV_STATE_DIR`, `CCTV_BUFFER_DIR`, `CCTV_STORAGE_ROOT`, `CCTV_RUNTIME_DIR`, `CCTV_SUPERVISOR_STATUS`, `CCTV_CAMERA_CONFIG`, `CCTV_PROXY_CAMERA_CONFIG`, `CCTV_RUNTIME_CAMERA_CONFIG`, `CCTV_REGISTRY_FILE`, `CCTV_REGISTRY_SEED`, `CCTV_PROVISION_SOCKET`, `CCTV_PROVISION_BACKUPS`, `CCTV_PROVISION_UNITS`, `CCTV_RETENTION_GUARD`, `CCTV_MODEL_DIRS`, `CCTV_NOTIFY_STATE`
+- addresses and ports of this machine: `CCTV_BIND`, `CCTV_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`
+- its own engine↔bot certificates: `CCTV_BRIDGE_CA`, `CCTV_BRIDGE_CLIENT_CERT`, `CCTV_BRIDGE_CLIENT_KEY`, `CCTV_CLIENT_CA`, `CCTV_SERVER_CERT`, `CCTV_SERVER_KEY`, `CCTV_EVENTS_CA`, `CCTV_EVENTS_CERT`, `CCTV_EVENTS_CLIENT_CA`, `CCTV_EVENTS_KEY`, `CCTV_BRIDGE_USER`, `CCTV_BRIDGE_GROUP`
+- its network and Bot API server: `CCTV_DISCOVERY_NETWORKS`, `CCTV_TELEGRAM_API`
+- its memory, disk and CPU: `CCTV_BUFFER_MAX_BYTES`, `CCTV_BUFFER_SEGMENTS`, `CCTV_MAX_TOTAL_BYTES`, `CCTV_STORAGE_BUDGET_BYTES`, `CCTV_MIN_FREE_BYTES`, `CCTV_CV_THREADS`, `CCTV_DETECT_NICE`, `CCTV_PERSON_INFER_SLOTS`
+
+Everything else is a setting of the installation: put it into `config.toml` or
+`secrets.toml`, not into `.env`. A new setting that would not travel with the handed-out
+configuration fails `tests/test_failover_config.py`.
 
 ## Two instances on one machine
 
@@ -155,3 +214,13 @@ events_url = "http://127.0.0.1:8791/v1/events"
   the layer; the supervisor uses only "be active / freeze"; layer settings come only from
   the shared configuration directory (from the node's environment only `CCTV_NODE`), and
   every key is documented here.
+- `tests/test_failover_config.py` — two nodes talking mutual TLS, each with its own
+  configuration directory (the spare one has only `[failover]` and outdated values): the
+  first revision, an edit of the directory on the active node and settings made from the
+  chat reach the armed node within seconds without manual steps; a client without the
+  installation's certificate gets no answer; after the engine moves, the new active node
+  runs on the received configuration and does not hand out its outdated directory, while an
+  edit on top of the current revision is handed back. Guards: a new file in the configuration
+  directory, a new settings file in a role's state, a setting read outside `CCTV_*`, a
+  setting that would not follow the handed-out configuration or an undocumented node-local
+  key fails the test; a received revision on which the node would not start is rejected.

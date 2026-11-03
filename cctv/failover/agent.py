@@ -12,6 +12,9 @@
 подтверждает, что процессы роли остановлены, потом новый забирает его каталог
 state и запускается. Двух активных на роль не бывает даже на секунду; не
 поднялся новый — роль возвращается старому.
+
+Конфиг (share.py): держатель роли раздаёт ревизии каталога конфига и настройки
+роли из чата остальным агентам — сразу после правки и сверкой раз в check_sec.
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import __version__
-from . import handover, panel, wire
+from . import handover, panel, share, wire
 from .config import ROLES, Failover
 
 STATE_FILE = "failover.json"
@@ -38,10 +41,12 @@ PEER_TIMEOUT_SEC = 3.0
 FREEZE_TIMEOUT_SEC = 60.0
 ACTIVATE_TIMEOUT_SEC = 90.0
 HANDOVER_TIMEOUT_SEC = 60.0
+# Как часто держатель роли смотрит, не правили ли его каталог конфига и настройки роли.
+SHARE_TICK_SEC = 2.0
 # Пауза перед переключением: бот успевает показать «переключаю» до того,
 # как его самого остановят.
 SWITCH_DELAY_SEC = 3.0
-MAX_BODY = 64 * 1024
+MAX_BODY = 2 * share.MAX_BYTES + 64 * 1024   # ревизия конфига — в JSON с экранированием
 
 
 def _assignment(holder: str, epoch: int, prev: str = "", carry: bool = False) -> dict:
@@ -50,7 +55,7 @@ def _assignment(holder: str, epoch: int, prev: str = "", carry: bool = False) ->
 
 class Agent:
     def __init__(self, cfg: Failover, role: str, state_dir: pathlib.Path, probe=None, *,
-                 log=print, clock=time.time) -> None:
+                 log=print, clock=time.time, local_dir: pathlib.Path | None = None) -> None:
         if role not in ROLES:
             raise ValueError(role)
         self.cfg, self.role, self.state_dir = cfg, role, pathlib.Path(state_dir)
@@ -72,6 +77,12 @@ class Agent:
         self.panel_server: ThreadingHTTPServer | None = None
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        # Раздаваемый конфиг: локальный каталог узла (источник правок на держателе роли),
+        # своя копия в state и последняя разосланная версия настроек роли.
+        self.local_dir = pathlib.Path(local_dir) if local_dir is not None else None
+        self.store = share.Store(self.state_dir)
+        self.disk_lock = threading.RLock()
+        self.role_sent = ""
 
     # --- что видит супервизор: «включись / замри» ------------------------------
     def active(self) -> bool:
@@ -117,6 +128,7 @@ class Agent:
     def start(self) -> None:
         self._serve()
         self.gossip(timeout=STARTUP_TIMEOUT_SEC)
+        self.share_tick()
         thread = threading.Thread(target=self._loop, name=f"failover-{self.role}", daemon=True)
         thread.start()
         self._threads.append(thread)
@@ -134,9 +146,16 @@ class Agent:
             self.changed.notify_all()
 
     def _loop(self) -> None:
+        next_check = 0.0
         while not self._stop.is_set():
-            self.check()
-            self._stop.wait(self.cfg.check_sec)
+            if time.monotonic() >= next_check:
+                next_check = time.monotonic() + self.cfg.check_sec
+                self.check()
+            try:
+                self.share_tick()
+            except Exception as exc:  # раздача не должна ронять агента
+                self.log(f"отказоустойчивость: раздача конфига: {type(exc).__name__}: {exc}")
+            self._stop.wait(min(SHARE_TICK_SEC, self.cfg.check_sec))
 
     def check(self) -> None:
         """Раз в check_sec: своя пригодность и сверка назначений с соседями."""
@@ -193,8 +212,10 @@ class Agent:
                 return False
             taking = (role == self.role and item["holder"] == self.cfg.me
                       and self.assign[role]["holder"] != self.cfg.me)
-        if taking and item["carry"] and item["prev"] != self.cfg.me and not self._take_state(item["prev"]):
-            return False
+        if taking and item["carry"] and item["prev"] != self.cfg.me:
+            with self.disk_lock:
+                if not self._take_state(item["prev"]):
+                    return False
         with self.changed:
             if not self._newer(item, self.assign[role]):
                 return False
@@ -288,14 +309,157 @@ class Agent:
                 item = (result or {}).get("assign", {}).get(role)
                 if isinstance(item, dict):
                     self.adopt(role, item)
+        try:
+            self.catch_up(found, timeout)
+        except Exception as exc:  # сверка не должна ронять агента
+            self.log(f"отказоустойчивость: сверка конфига: {type(exc).__name__}: {exc}")
         return found
+
+    # --- раздаваемый конфиг (share.py) -----------------------------------------
+    def share_tick(self) -> None:
+        """Держатель роли: правку локального каталога — новой ревизией, настройки роли — соседям."""
+        if self.local_dir is not None:
+            self._publish_local()
+        if share.ROLE_FILES.get(self.role) and self.active() and self.running:
+            state = share.role_state(self.state_dir, self.role)
+            if state["sha"] != self.role_sent:
+                self.role_sent = state["sha"]
+                self._send_all(self._role_peers(), "/v1/role-state", self._role_payload(state))
+
+    def _publish_local(self) -> None:
+        """Правка локального каталога узла — новой ревизией, если её можно раздать.
+
+        Раздаётся только правка на держателе роли и только поверх текущей ревизии:
+        каталог узла до правки совпадал с раздаваемым. Иначе (каталог запасного узла
+        неполон или устарел) правка перетёрла бы настоящий конфиг — журнал объясняет,
+        что сделать. Пока ревизий нет ни у кого, первую выпускает держатель роли.
+        """
+        files = share.read_files(self.local_dir, share.FILES)
+        sha = share.digest(files)
+        with self.disk_lock:
+            seen = self.store.seen()
+            if sha == seen:
+                return
+            self.store.mark_seen(sha)
+            meta = self.store.meta()
+            if sha == meta["sha"]:
+                return
+            if not self.active():
+                if seen is not None:
+                    self.log("отказоустойчивость: каталог конфига правили на узле наготове — "
+                             "правка не раздаётся; правьте его на узле, который держит роль")
+                return
+            if meta["rev"] and seen != meta["sha"]:
+                if seen is not None:
+                    self.log(f"отказоустойчивость: каталог конфига этого узла не совпадал с раздаваемым "
+                             f"(ревизия {meta['rev']}) — правка не раздаётся; сначала возьмите раздаваемые "
+                             f"файлы из {self.store.root} (docs/failover.md)")
+                return
+            bundle = {"rev": meta["rev"] + 1, "origin": self.cfg.me, "sha": sha, "files": files}
+            try:
+                self.adopt_config(bundle)
+            except share.ShareError as exc:
+                self.log(f"отказоустойчивость: каталог конфига не раздаётся — на нём узел не запустится ({exc})")
+                return
+        self._send_all([url for _, _, url in self.agents() if url != self.own_url()], "/v1/config", bundle)
+
+    def adopt_config(self, bundle: dict) -> bool:
+        """Принять ревизию каталога конфига, если она новее своей. ShareError — не годится узлу."""
+        with self.disk_lock:
+            if not share.newer(bundle, self.store.meta(), self.cfg.rank):
+                return False
+            files = share.check_bundle(bundle, self.cfg.me, self.role)
+            self.store.save(int(bundle["rev"]), str(bundle["origin"]), files)
+        self.log(f"отказоустойчивость: конфиг — ревизия {bundle['rev']} с узла {bundle['origin']}")
+        return True
+
+    def receive_config(self, bundle: dict) -> dict:
+        try:
+            changed = self.adopt_config(bundle)
+        except (share.ShareError, KeyError, TypeError, ValueError) as exc:
+            self.log(f"отказоустойчивость: присланный конфиг не принят ({exc})")
+            return {"ok": False, "error": "rejected", "config": self.store.meta()}
+        return {"ok": True, "changed": changed, "config": self.store.meta()}
+
+    def _role_peers(self) -> list[str]:
+        return [node.agent(self.role) for node in self.cfg.ordered if node.name != self.cfg.me]
+
+    def _role_payload(self, state: dict) -> dict:
+        with self.lock:
+            epoch = self.assign[self.role]["epoch"]
+        return {"role": self.role, "holder": self.cfg.me, "epoch": epoch, **state}
+
+    def role_state_data(self, role: str) -> dict | None:
+        """Настройки роли для узла наготове — только с узла, где роль работает."""
+        if role != self.role or not share.ROLE_FILES.get(role) or not self.active():
+            return None
+        return self._role_payload(share.role_state(self.state_dir, role))
+
+    def receive_role_state(self, payload: dict) -> dict:
+        """Настройки роли от её держателя; пишутся, только пока роль здесь не запущена."""
+        if payload.get("role") != self.role or not share.ROLE_FILES.get(self.role):
+            return {"ok": False, "error": "bad_role"}
+        files = payload.get("files")
+        if not isinstance(files, dict) or share.digest(files) != payload.get("sha"):
+            return {"ok": False, "error": "rejected"}
+        with self.disk_lock:
+            with self.lock:
+                holder = self.assign[self.role]["holder"]
+                if payload.get("holder") != holder or holder == self.cfg.me or self.running:
+                    return {"ok": False, "error": "stale", "holder": holder}
+            if share.role_state(self.state_dir, self.role)["sha"] == payload["sha"]:
+                return {"ok": True, "changed": False}
+            try:
+                share.save_role_state(self.state_dir, self.role, files)
+            except share.ShareError as exc:
+                self.log(f"отказоустойчивость: настройки роли {self.role} не приняты ({exc})")
+                return {"ok": False, "error": "rejected"}
+        self.log(f"отказоустойчивость: настройки роли {self.role} приняты с узла {holder}")
+        return {"ok": True, "changed": True}
+
+    def catch_up(self, found: dict, timeout: float = PEER_TIMEOUT_SEC) -> None:
+        """Пропустил рассылку — догоняем по статусам соседей: конфиг и настройки роли."""
+        urls = {(node, role): url for node, role, url in self.agents()}
+        best, source = self.store.meta(), None
+        for key, result in found.items():
+            item = (result or {}).get("config")
+            if isinstance(item, dict) and share.newer(item, best, self.cfg.rank):
+                best, source = item, urls[key]
+        if source is not None:
+            try:
+                self.receive_config(self.client.call(source, "GET", "/v1/config", timeout=timeout))
+            except wire.WireError:
+                pass
+        holder = self.holder()
+        view = found.get((holder, self.role)) or {}
+        if (share.ROLE_FILES.get(self.role) and holder != self.cfg.me and not self.running
+                and view.get("running") and view.get("role_state")
+                and view["role_state"] != share.role_state(self.state_dir, self.role)["sha"]):
+            try:
+                self.receive_role_state(self.client.call(urls[(holder, self.role)], "GET",
+                                                         f"/v1/role-state?role={self.role}", timeout=timeout))
+            except wire.WireError:
+                pass
+
+    def _send_all(self, targets: list[str], path: str, payload: dict) -> None:
+        def send(url):
+            try:
+                self.client.call(url, "POST", path, payload)
+            except wire.WireError:
+                pass  # догонит сверкой раз в check_sec
+
+        if targets:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as pool:
+                list(pool.map(send, targets))
 
     def status(self) -> dict:
         with self.lock:
             return {"node": self.cfg.me, "role": self.role, "version": __version__,
                     "assign": json.loads(json.dumps(self.assign)), "running": self.running,
                     "active": self.assign[self.role]["holder"] == self.cfg.me,
-                    "health": dict(self.health), "now": self.clock()}
+                    "health": dict(self.health), "now": self.clock(), "config": self.store.meta(),
+                    "role_state": (share.role_state(self.state_dir, self.role)["sha"]
+                                   if share.ROLE_FILES.get(self.role) else "")}
 
     def handle_assign(self, payload: dict) -> dict:
         role = payload.get("role")
@@ -492,6 +656,13 @@ def _peer_handler(agent: Agent):
                 if data is None:
                     return self.send(409, {"ok": False, "error": "role_running"})
                 return self.send(200, data, "application/gzip")
+            if path == "/v1/config":
+                return self.send(200, agent.store.bundle())
+            if path == "/v1/role-state":
+                payload = agent.role_state_data(dict(urllib.parse.parse_qsl(query)).get("role", ""))
+                if payload is None:
+                    return self.send(409, {"ok": False, "error": "not_holder"})
+                return self.send(200, payload)
             return self.send(404, {"ok": False})
 
         def do_POST(self) -> None:
@@ -503,6 +674,10 @@ def _peer_handler(agent: Agent):
                 return self.send(403, {"ok": False})
             if self.path == "/v1/assign":
                 return self.send(200, agent.handle_assign(payload))
+            if self.path == "/v1/config":
+                return self.send(200, agent.receive_config(payload))
+            if self.path == "/v1/role-state":
+                return self.send(200, agent.receive_role_state(payload))
             return self.send(404, {"ok": False})
 
     return Peer
