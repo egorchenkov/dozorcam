@@ -93,7 +93,7 @@ to the event snapshot with any text does the same.
 | `/lang en\|ru` | interface language; default `CCTV_LANG`, else the owner's Telegram language, else English |
 | `/help` | commands and buttons for the current mode |
 | `/version` | installed version and the latest release |
-| `/nodes` | nodes: where the engine and the bot run, fitness, switching a role (owner; only with several nodes, [failover](failover.md)) |
+| `/nodes` | nodes: where the engine and the bot run, fitness, switching a role (owner; in the `/` menu and `/help` only with several nodes, [failover](failover.md)) |
 
 ## People: owner, allowed, invited
 

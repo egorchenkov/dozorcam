@@ -103,6 +103,9 @@ and the node's `bridge_url` / `events_url`.
 
 ## Switching a role from the bot
 
+With `[failover]` the bot lists `/nodes` in the Telegram "/" menu and in `/help` (since
+0.7.1); an installation with one node and no `[failover]` does not show it.
+
 `/nodes` (owner only) shows every node, which role is active where, which nodes are armed,
 whether each node is fit and how long ago it was checked, and the result of the last
 switch. The buttons "engine → node" / "bot → node" move a role; a node that does not answer

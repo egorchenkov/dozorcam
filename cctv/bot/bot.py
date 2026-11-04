@@ -122,6 +122,10 @@ OWNER_LANG_KEY = "owner_lang"
 SETUP_CODE_KEY = "setup_code"
 # Команды меню «/» Telegram, подписи — command.<имя> в каталогах.
 MENU_COMMANDS = ("menu", "cam", "add", "mode", "invite", "model", "lang", "setup", "help", "version")
+# /nodes — только при нескольких узлах: адрес панели узлов боту отдаёт слой
+# отказоустойчивости (CCTV_NODES_URL); на одном узле панели нет, и команда в меню
+# отвечала бы лишь «не настроено».
+NODES_COMMAND = "nodes"
 # Закреплённое сообщение-прогресс мастера в личке владельца: «Шаг 1/3 … 3/3».
 # Значение — «<chat_id>:<message_id>»; после третьего шага правится в «готово»
 # и открепляется (закреп чата остаётся за картой камер).
@@ -3023,10 +3027,8 @@ class CctvBot:
                  self._t("help.card_flat" if flat else "help.card_topics"),
                  self._t("help.reply"), "",
                  self._t("help.commands")]
-        lines += [f"/{name} — {self._t(f'command.{name}')}" for name in MENU_COMMANDS
+        lines += [f"/{name} — {self._t(f'command.{name}')}" for name in self.menu_commands()
                   if name not in ("help", "setup") or (name == "setup" and not flat)]
-        if getattr(self.cfg, "nodes_url", ""):
-            lines.append(f"/nodes — {self._t('command.nodes')}")
         if not self.is_owner(user_id):
             lines += ["", self._t("help.owner_only")]
         lines += ["", self._t("help.version", version=__version__)]
@@ -3430,6 +3432,13 @@ class CctvBot:
             await self.refresh_all_panels(force=True)
         return self._t("lang.changed", lang=self.lang)
 
+    def menu_commands(self) -> tuple[str, ...]:
+        """Команды меню «/» и /help: /nodes — перед /help, когда у бота есть панель узлов."""
+        if not getattr(self.cfg, "nodes_url", ""):
+            return MENU_COMMANDS
+        at = MENU_COMMANDS.index("help")
+        return MENU_COMMANDS[:at] + (NODES_COMMAND,) + MENU_COMMANDS[at:]
+
     async def set_command_menu(self) -> None:
         """Меню «/» в Telegram: на старте и после /lang.
 
@@ -3440,7 +3449,7 @@ class CctvBot:
         from telegram import BotCommand
 
         def commands(lang: str) -> list:
-            return [BotCommand(name, i18n.t(f"command.{name}", lang)) for name in MENU_COMMANDS]
+            return [BotCommand(name, i18n.t(f"command.{name}", lang)) for name in self.menu_commands()]
 
         explicit = (i18n.match(self.state.get_service(LANG_KEY))
                     or i18n.match(getattr(self.cfg, "lang", "")))

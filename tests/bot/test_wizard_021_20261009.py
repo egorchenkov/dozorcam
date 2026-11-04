@@ -512,6 +512,31 @@ class HelpTest(Base):
         self.assertIn("help", names)
         self.assertIn("version", names)
 
+    async def test_nodes_in_menu_and_help_only_with_failover(self) -> None:
+        # Один узел (без [failover]) — слой не отдаёт адрес панели: /nodes нет ни в меню, ни в /help.
+        single = config.load({"CCTV_BOT_TOKEN": "0:x", "CCTV_INTERNAL_TLS": "0"})
+        self.assertEqual("", single.nodes_url)
+        await self.bot.set_command_menu()
+        for call in self.tg.of("set_my_commands"):
+            self.assertNotIn("nodes", [name for name, _ in call["commands"]])
+        self.assertNotIn("/nodes", self.bot.help_text(OWNER))
+        # С [failover] агент роли bot отдаёт CCTV_NODES_URL — /nodes перед /help в обоих языках.
+        layered = config.load({"CCTV_BOT_TOKEN": "0:x", "CCTV_INTERNAL_TLS": "0",
+                               "CCTV_NODES_URL": "http://127.0.0.1:9", "CCTV_NODES_TOKEN": "k"})
+        self.bot.cfg = dataclasses.replace(self.cfg, nodes_url=layered.nodes_url)
+        self.tg.calls.clear()
+        await self.bot.set_command_menu()
+        menus = {call["language_code"]: call["commands"] for call in self.tg.of("set_my_commands")}
+        self.assertEqual({None, "ru"}, set(menus))
+        for code, lang in ((None, "en"), ("ru", "ru")):
+            with self.subTest(lang=lang):
+                names = [name for name, _ in menus[code]]
+                self.assertEqual(names.index("help") - 1, names.index("nodes"))
+                self.assertIn(("nodes", i18n.t("command.nodes", lang)), menus[code])
+                self.assertTrue(i18n.t("command.nodes", lang).strip())
+        self.assertNotEqual(i18n.t("command.nodes", "en"), i18n.t("command.nodes", "ru"))
+        self.assertIn("/nodes — " + self.bot._t("command.nodes"), self.bot.help_text(OWNER))
+
 
 class EmptyAddTest(Base):
     async def test_empty_scan_names_the_reason_and_the_way_out(self) -> None:

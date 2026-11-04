@@ -5,6 +5,16 @@ Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-11-04
+
+### Added
+
+- `/nodes` in the Telegram "/" command menu and in `/help` when the installation has
+  `[failover]`: it was available only by typing it. It goes right before `/help`, with the
+  same caption in English and Russian as before. An installation with one node and no
+  `[failover]` has no node panel, so `/nodes` is not shown there
+  ([docs/failover.md](docs/failover.md#switching-a-role-from-the-bot)).
+
 ## [0.7.0] — 2026-11-04
 
 Failover, step 5 of 5: automatic takeover by priority — off by default, three nodes or more.
