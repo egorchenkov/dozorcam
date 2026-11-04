@@ -603,6 +603,7 @@
  "nodes.started.engine": "",
  "nodes.started.bot": "",
  "nodes.started_toast": "",
+  "nodes.started.size": "",
  "supervisor.armed": "",
  "supervisor.failover_listen": "",
  "failover.bad_value": "",

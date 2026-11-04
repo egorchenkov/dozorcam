@@ -32,7 +32,8 @@ def load_cfg():
 def fake_agent(cfg):
     holders = {"engine": "a", "bot": "a"}
     return SimpleNamespace(cfg=cfg, holder=holders.get, switching=None, last_switch=None,
-                           lock=threading.Lock(), assign={})
+                           lock=threading.Lock(), assign={role: {"holder": "a", "epoch": 0} for role in holders},
+                           request_switch=lambda role, target: "started", state_size=lambda: 21 * 1048576)
 
 
 def status(running: bool, health: dict) -> dict:
@@ -73,6 +74,23 @@ class PanelTest(unittest.TestCase):
         view = panel.view(fake_agent(self.cfg), "en", statuses=silent)
         self.assertEqual([panel.REFRESH], [button["data"] for row in view["buttons"] for button in row])
         self.assertIn("   bot: does not answer", view["text"])
+
+    def test_bot_move_names_the_real_term_and_the_state_size(self) -> None:
+        """Перевод бота — не «несколько секунд»: остановка, передача state, запуск; панель
+        называет срок и объём передаваемых данных (живой прогон: ~21 МБ, до минуты)."""
+        agent = fake_agent(self.cfg)
+        reply = panel.press(agent, "ok:bot:b:0", "en")
+        self.assertIn("Switching the bot to b. The bot stops here, hands its data (21.0 MB) over to b", reply["text"])
+        self.assertIn("usually within half a minute, up to a minute with a large bot database", reply["text"])
+        self.assertNotIn("few seconds", reply["text"])
+        reply = panel.press(agent, "ok:bot:b:0", "ru")
+        self.assertIn("передаст свои данные (21.0 МБ) узлу b", reply["text"])
+        self.assertIn("в пределах полминуты, с большой базой бота до минуты", reply["text"])
+        # Объём не известен (роль не запущена здесь) — срок без скобок; движок — прежний текст.
+        agent.state_size = lambda: 0
+        self.assertIn("hands its data over to b", panel.press(agent, "ok:bot:b:0", "en")["text"])
+        self.assertIn("Switching the engine to b. Press Refresh in a minute.",
+                      panel.press(agent, "ok:engine:b:0", "en")["text"])
 
     def test_not_checked_yet(self) -> None:
         fresh = {key: status(value["running"], {}) for key, value in STATUSES.items()}

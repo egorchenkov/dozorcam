@@ -170,7 +170,8 @@ class Node:
         self.start()
 
     def start(self) -> None:
-        self.agent = Agent(load(self.test.root, self.name), "engine", self.test.root / "state" / self.name,
+        self.agent = Agent(load(self.test.root, self.name), getattr(self.test, "ROLE", "engine"),
+                           self.test.root / "state" / self.name,
                            log=lambda line: self.test.log.append(f"{self.name}: {line}"))
         self.agent.start()
         self.stop_event = threading.Event()
@@ -386,10 +387,13 @@ class FencedHolderLogTest(unittest.TestCase):
         layer = mock.Mock()
         layer.cfg.me = "a"
         layer.holder.return_value = holder
+        layer.assignment.return_value = (holder, 3)
         layer.active.return_value = False
         sup = container.Supervisor.__new__(container.Supervisor)
         sup.role, sup.children, sup.stopping, sup.layer = "bot", [], False, layer
-        sup.fingerprint = lambda: ("changed",)   # цикл ожидания не крутится: «правка конфига»
+        # Один виток цикла ожидания: после него «правка конфига» его завершает.
+        ticks = iter([("before",), ("changed",), ("changed",)])
+        sup.fingerprint = lambda: next(ticks, ("changed",))
         lines: list[str] = []
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(container, "STATUS_PATH", pathlib.Path(tmp) / "supervisor.json"), \
@@ -403,7 +407,149 @@ class FencedHolderLogTest(unittest.TestCase):
         self.assertFalse(any("наготове" in line for line in lines), lines)
 
     def test_armed_node_names_the_holder(self) -> None:
-        self.assertIn("роль bot наготове: её держит узел b", self.hold("b"))
+        self.assertIn("роль bot наготове: её держит узел b (эпоха 3)", self.hold("b"))
+
+
+class ArmedHealthHolderTest(unittest.TestCase):
+    """health узла наготове (`python -m cctv.container health`) называет текущего держателя и
+    эпоху — как агент и /nodes — после автоперехватов, возврата кнопками и выхода из pause.
+
+    Раньше супервизор читал держателя один раз при входе в ожидание и писал его в статус
+    каждый тик: после двух автоперехватов и возврата кнопками health часами называл
+    прежнего держателя, а проснувшийся после pause узел — себя. Агенты настоящие (auto,
+    три узла), без сети: назначения приходят через adopt, как от соседей.
+    """
+
+    def setUp(self) -> None:
+        from cctv import container
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = pathlib.Path(self.tmp.name)
+        write_config(self.root, {name: (free_port(), free_port()) for name in NAMES},
+                     "auto = true\nheartbeat_sec = 1\ndead_after_sec = 4\n")
+        self.lines: list[str] = []
+        self.status_path = self.root / "supervisor.json"
+        patches = [mock.patch.object(container, "STATUS_PATH", self.status_path),
+                   mock.patch.object(container, "TICK_SEC", 0.2),
+                   mock.patch.object(container, "log", self.lines.append),
+                   mock.patch.dict(os.environ, {"CCTV_CONFIG_DIR": str(self.root), "CCTV_LANG": "en"})]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def armed(self, me: str, fenced: bool = False):
+        from cctv import container
+
+        agent = Agent(load(self.root, me), "bot", self.root / "state" / me, log=self.lines.append)
+        if fenced:
+            agent.started_mono -= 1000   # соседей не слышно давно: держатель без кворума
+        sup = container.Supervisor.__new__(container.Supervisor)
+        sup.role, sup.children, sup.stopping, sup.layer = "bot", [], False, agent
+        sup.fingerprint = lambda: ("same",)
+        thread = threading.Thread(target=sup.hold_armed, args=(("same",),), daemon=True)
+        thread.start()
+
+        def finish():
+            sup.stopping = True
+            agent.stop()
+            thread.join(3)
+
+        self.addCleanup(finish)
+        return agent
+
+    def health(self, holder: str, epoch: int) -> None:
+        """Статус и health называют holder/epoch — не позже пары тиков после назначения."""
+        import contextlib
+        import io
+
+        from cctv import container
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                status = json.loads(self.status_path.read_text())
+            except (OSError, ValueError):
+                status = {}
+            if status.get("holder") == holder and status.get("epoch") == epoch and status.get("detail") == holder:
+                break
+            time.sleep(0.05)
+        self.assertEqual((holder, epoch, holder, "armed"),
+                         (status.get("holder"), status.get("epoch"), status.get("detail"), status.get("state")),
+                         "\n".join(self.lines))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(0, container.health())
+        self.assertEqual(f"armed: the bot role is held by node {holder} (epoch {epoch})", out.getvalue().strip())
+
+    def test_health_follows_automatic_takeovers(self) -> None:
+        agent = self.armed("c")
+        self.health("a", 0)
+        # Держатель a замолчал — роль забрал b; потом b замолчал, вернувшийся a забрал её назад.
+        self.assertTrue(agent.adopt("bot", {"holder": "b", "epoch": 1, "prev": "a", "auto": True}))
+        self.health("b", 1)
+        self.assertTrue(agent.adopt("bot", {"holder": "a", "epoch": 2, "prev": "b", "auto": True}))
+        self.health("a", 2)
+        self.assertIn("роль bot наготове: её держит узел b (эпоха 1)", self.lines)
+        self.assertIn("роль bot наготове: её держит узел a (эпоха 2)", self.lines)
+
+    def test_health_follows_return_by_buttons(self) -> None:
+        agent = self.armed("c")
+        self.assertTrue(agent.adopt("bot", {"holder": "b", "epoch": 2, "prev": "a", "auto": True}))
+        self.health("b", 2)
+        # Кнопкой /nodes роль вернули главному узлу: новая эпоха с передачей state.
+        self.assertTrue(agent.adopt("bot", {"holder": "a", "epoch": 3, "prev": "b", "carry": True}))
+        self.health("a", 3)
+
+    def test_health_after_pause_names_the_new_holder_not_itself(self) -> None:
+        # Узел a держал роль, «заснул» (pause) и проснулся без кворума: замер, держит сам.
+        agent = self.armed("a", fenced=True)
+        self.health("a", 0)
+        self.assertTrue(any("роль bot замерла" in line for line in self.lines), self.lines)
+        # Пока он спал, роль забрал b — health должен назвать b, а не этот узел.
+        self.assertTrue(agent.adopt("bot", {"holder": "b", "epoch": 1, "prev": "a", "auto": True}))
+        self.health("b", 1)
+        self.assertIn("роль bot наготове: её держит узел b (эпоха 1)", self.lines)
+
+
+class FreezeReasonLogTest(unittest.TestCase):
+    """Замирание держателя в журнале называет одну причину — кворум; конфликт опроса
+    Telegram агент пишет отдельной строкой. Раньше одна строка «нет кворума узлов или опрос
+    Telegram у другого процесса» не говорила, что случилось."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = pathlib.Path(self.tmp.name)
+        write_config(self.root, {name: (free_port(), free_port()) for name in NAMES},
+                     "auto = true\nheartbeat_sec = 1\ndead_after_sec = 4\n")
+        self.lines: list[str] = []
+        self.agent = Agent(load(self.root, "a"), "bot", self.root / "state" / "a", log=self.lines.append)
+
+    def test_holder_without_quorum_names_the_quorum(self) -> None:
+        from cctv import container
+
+        self.agent.started_mono -= 1000   # b и c не слышны
+        sup = container.Supervisor.__new__(container.Supervisor)
+        sup.role, sup.children, sup.stopping, sup.layer = "bot", [], False, self.agent
+        sup.wired = ()
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(container, "STATUS_PATH", pathlib.Path(tmp) / "supervisor.json"), \
+                mock.patch.object(container, "log", self.lines.append):
+            sup.supervise({}, ("same",))
+        frozen = [line for line in self.lines if line.endswith("— замираю")]
+        self.assertEqual(["роль bot: нет кворума узлов — слышно 1 из 3, нужно 2 (слышны: a) — замираю"], frozen)
+        self.assertFalse([line for line in self.lines if "Telegram" in line], self.lines)
+
+    def test_poll_conflict_is_a_separate_line(self) -> None:
+        # Кворум есть: перехватил устаревший процесс — опрос возобновится, роль не снимается.
+        self.assertTrue(self.agent.conflict())
+        self.assertIn("опрос Telegram перехватил другой процесс", self.lines[-1])
+        self.assertNotIn("кворума нет", self.lines[-1])
+        # Кворума нет: роль замирает, и причина названа — опрос у другого процесса без кворума.
+        self.agent.started_mono -= 1000
+        self.assertFalse(self.agent.conflict())
+        self.assertIn("опрос Telegram у другого процесса", self.lines[-1])
+        self.assertTrue(self.lines[-1].endswith("— замираю"), self.lines[-1])
 
 
 class BotAutoFailoverTest(unittest.TestCase):

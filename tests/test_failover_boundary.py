@@ -36,7 +36,10 @@ SUPERVISOR = PACKAGE / "container.py"
 # conflict — «процесс роли отдал опрос Telegram другому» (тоже «замри», auto.py);
 # holder/cfg — для журнала и статуса; wiring/panel_env — окружение процессов роли;
 # stop — остановка самого агента.
-SUPERVISOR_USES = {"active", "report", "wait", "conflict", "holder", "cfg", "wiring", "panel_env", "stop"}
+# assignment и quorum_heard — только для человека: статус healthcheck (держатель и эпоха как у
+# /nodes) и строка журнала «замираю: нет кворума — слышно N из M»; решений по ним супервизор не принимает.
+SUPERVISOR_USES = {"active", "report", "wait", "conflict", "holder", "cfg", "wiring", "panel_env", "stop",
+                   "assignment", "quorum_heard"}
 # Что слой кладёт в окружение процессов роли (CCTV_PUBLIC_URL — адрес своего моста для ссылок на медиа;
 # CCTV_POLL_CONFLICT — боту при автопереключении: на конфликт опроса выйти, а не бороться;
 # CCTV_ORIGIN — обеим ролям: имя своего узла для подписи сообщений, только текст).

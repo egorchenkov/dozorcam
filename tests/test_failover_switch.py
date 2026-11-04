@@ -551,5 +551,107 @@ class EngineSwitchTest(unittest.TestCase):
             self.assertFalse(count["a"] and count["b"], f"движок жил на двух узлах сразу: {self.timeline}")
 
 
+class AutoManualSwitchTest(unittest.TestCase):
+    """Ручной перевод роли бота кнопкой при auto = true и живом кворуме из трёх узлов.
+
+    Передача state длится дольше, чем держатель живёт без кворума (fence_sec): так
+    было с базой бота в десятки МБ. Раньше state забирали и запрос переключения, и
+    сердцебиение (оно слышит новое назначение у соседей раньше): сердцебиение висело
+    на загрузке — новый держатель «терял» кворум и замирал, а второй приём state
+    ложился поверх уже запущенного бота. Теперь state принимается один раз, а
+    держатель после старта работает без перерыва.
+    """
+
+    ROLE = "bot"
+    HEARTBEAT, DEAD = 1, 4
+    SLOW_SEC = 3.0   # дольше fence_sec (половина DEAD)
+
+    def setUp(self) -> None:
+        from tests.test_failover_auto import NAMES, Node, write_config   # тот файл импортирует этот
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = pathlib.Path(self.tmp.name)
+        self.log: list[str] = []
+        ports = {name: (free_port(), free_port()) for name in NAMES}
+        write_config(self.root, ports, f"auto = true\nheartbeat_sec = {self.HEARTBEAT}\n"
+                                       f"dead_after_sec = {self.DEAD}\n")
+        for name in NAMES:
+            (self.root / "state" / name).mkdir(parents=True)
+        (self.root / "state" / "a" / "bot.sqlite3.json").write_text('{"topics": {"yard": 42}}')
+        self.nodes = {name: Node(self, name) for name in NAMES}
+        for node in self.nodes.values():
+            self.addCleanup(lambda node=node: node.kill() if not node.stop_event.is_set() else None)
+        self.samples: list[tuple[float, tuple[str, ...]]] = []
+        self.sampling = threading.Event()
+        threading.Thread(target=self._sample, daemon=True).start()
+        self.addCleanup(self.sampling.set)
+        self.wait_for(lambda: self.running() == ("a",), 10, "a держит роль")
+
+    def _sample(self) -> None:
+        while not self.sampling.is_set():
+            self.samples.append((time.monotonic(), self.running()))
+            time.sleep(0.02)
+
+    def running(self) -> tuple[str, ...]:
+        return tuple(name for name, node in self.nodes.items() if node.running)
+
+    def wait_for(self, predicate, timeout: float, what: str):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = predicate()
+            if result:
+                return result
+            time.sleep(0.05)
+        self.fail(f"не дождался: {what}\n" + "\n".join(self.log[-40:]))
+
+    def test_manual_bot_switch_with_auto_takes_state_once_and_keeps_running(self) -> None:
+        a, b, c = (self.nodes[name] for name in ("a", "b", "c"))
+        packed: list[float] = []
+        real_handover = a.agent.handover_data
+
+        def slow_handover(role):
+            data = real_handover(role)
+            if data is not None:
+                packed.append(time.monotonic())
+                time.sleep(self.SLOW_SEC)
+            return data
+
+        takers: list[str] = []
+        real_take = b.agent._take_state
+
+        def take(source):
+            takers.append(threading.current_thread().name)
+            return real_take(source)
+
+        with mock.patch.object(a.agent, "handover_data", side_effect=slow_handover), \
+                mock.patch.object(b.agent, "_take_state", side_effect=take):
+            asked = time.monotonic()
+            outcome = c.agent.switch("bot", "b")
+        self.assertTrue(outcome.get("ok"), f"{outcome}\n" + "\n".join(self.log[-40:]))
+        self.wait_for(lambda: self.running() == ("b",), 5, "b держит роль")
+        # Выборка идёт своим потоком раз в 20 мс: дождаться первой выборки с b, а не гадать.
+        started = self.wait_for(lambda: next((at for at, names in self.samples if names == ("b",)), None),
+                                2, "выборка с b")
+        # Срок перевода соразмерен передаче state: остановка, одна загрузка, запуск — без
+        # ожидания сердцебиения, окна кворума или второй загрузки.
+        self.assertLess(started - asked, self.SLOW_SEC + 2.0,
+                        f"перевод занял {started - asked:.1f} с при передаче {self.SLOW_SEC} с\n"
+                        + "\n".join(self.log[-40:]))
+        # Держатель при живом кворуме не замирает; отданный state приходит один раз.
+        time.sleep(self.DEAD + 2)
+        after = [names for at, names in self.samples if at >= started]
+        self.assertEqual([], [names for names in after if names != ("b",)][:3],
+                         "новый держатель замер после старта\n" + "\n".join(self.log[-40:]))
+        self.assertEqual(1, len(packed), "state отдан не один раз\n" + "\n".join(self.log))
+        self.assertLess(packed[0], started, "state принят после старта роли")
+        # Сердцебиение загрузку state не ждёт: иначе оно молчит дольше fence_sec и держатель замирает.
+        self.assertFalse([name for name in takers if name.startswith("failover-beat")], takers)
+        taken = [line for line in self.log if line.startswith("b: ") and "state роли bot принят" in line]
+        self.assertEqual(1, len(taken), "\n".join(self.log))
+        self.assertIn("yard", (self.root / "state" / "b" / "bot.sqlite3.json").read_text())
+        self.assertEqual([], [names for _, names in self.samples if len(names) > 1][:3])
+        self.assertEqual(("b", "b", "b"), tuple(node.agent.holder() for node in (a, b, c)))
+
+
 if __name__ == "__main__":
     unittest.main()

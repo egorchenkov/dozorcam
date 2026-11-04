@@ -268,15 +268,21 @@ class Supervisor:
     def hold_armed(self, fingerprint: tuple) -> None:
         """Узел наготове: процессы роли не запущены, ждём назначения или правки конфига."""
         self.stop_all()
-        holder = self.layer.holder()
-        if holder == self.layer.cfg.me:
-            # Замер (auto): роль за этим узлом, но кворума он не слышит — ждёт кворума или новой эпохи.
-            log(f"роль {self.role} замерла: держит этот узел, но кворума не слышно — жду")
-        else:
-            log(f"роль {self.role} наготове: её держит узел {holder}")
+        # Назначение меняется и пока узел наготове (автоперехваты, возврат кнопками, новая
+        # эпоха после замирания): статус для healthcheck и журнал — по текущему, а не по тому,
+        # что было при входе; иначе health часами называл прежнего держателя или сам узел.
+        shown: tuple[str, int] | None = None
         while (not self.stopping and self.layer is not None and not self.layer.active()
                and self.fingerprint() == fingerprint):
-            write_status("armed", holder, role=self.role, node=self.layer.cfg.me, holder=self.layer.holder())
+            holder, epoch = self.layer.assignment()
+            if (holder, epoch) != shown:
+                if holder == self.layer.cfg.me:
+                    # Замер (auto): роль за этим узлом, но кворума он не слышит — ждёт кворума или новой эпохи.
+                    log(f"роль {self.role} замерла: держит этот узел, но кворума не слышно — жду (эпоха {epoch})")
+                else:
+                    log(f"роль {self.role} наготове: её держит узел {holder} (эпоха {epoch})")
+                shown = (holder, epoch)
+            write_status("armed", holder, role=self.role, node=self.layer.cfg.me, holder=holder, epoch=epoch)
             self.layer.wait(TICK_SEC)
 
     def sleep(self, seconds: float) -> None:
@@ -323,7 +329,12 @@ class Supervisor:
             if self.layer is not None:
                 if not self.layer.active():
                     if self.layer.holder() == self.layer.cfg.me:
-                        log(f"роль {self.role}: нет кворума узлов или опрос Telegram у другого процесса — замираю")
+                        # Держатель без «включись» — только без кворума: конфликт опроса Telegram
+                        # агент объясняет отдельной строкой (conflict), а роль здесь не снимает.
+                        heard = self.layer.quorum_heard()
+                        log(f"роль {self.role}: нет кворума узлов — слышно {len(heard)} из "
+                            f"{len(self.layer.cfg.nodes)}, нужно {self.layer.cfg.quorum} "
+                            f"(слышны: {', '.join(heard)}) — замираю")
                     else:
                         log(f"роль {self.role} передана узлу {self.layer.holder()}: замираю")
                     return
@@ -528,7 +539,8 @@ def health() -> int:
         return 1
     state = status.get("state")
     if state == "armed":
-        print(i18n.t("supervisor.armed", lang, role=role, holder=status.get("detail", "?")))
+        print(i18n.t("supervisor.armed", lang, role=role, holder=status.get("holder") or status.get("detail", "?"),
+                     epoch=status.get("epoch", "?")))
         return 0
     if state != "running":
         prefix = i18n.t("supervisor.no_config", lang) if state == "no_config" else state

@@ -152,8 +152,12 @@ def press(agent, data: str, lang: str | None) -> dict:
         if code != "started":
             return {**view(agent, lang), "toast": _t(lang, "nodes.unknown")}
         own_bot = role == "bot" and agent.holder("bot") == agent.cfg.me
+        # Переезд бота: панель называет реальный срок (остановка здесь, передача state, старт
+        # там) и объём передаваемых данных, когда он известен, а не «несколько секунд».
+        size = agent.state_size() if own_bot else 0
         text = _t(lang, "nodes.started.bot" if own_bot else "nodes.started.engine",
-                  role=_t(lang, f"nodes.role.{role}"), target=target)
+                  role=_t(lang, f"nodes.role.{role}"), target=target,
+                  size=_t(lang, "nodes.started.size", mb=f"{size / 1048576:.1f}") if size else "")
         buttons = [] if own_bot else [[_button(_t(lang, "nodes.button.refresh"), REFRESH)]]
         return {"text": text, "buttons": buttons, "toast": _t(lang, "nodes.started_toast")}
     return {**view(agent, lang), "toast": _t(lang, "nodes.unknown")}

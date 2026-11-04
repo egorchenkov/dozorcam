@@ -23,7 +23,8 @@ node is **armed**:
 - its containers are running and its configuration is the same;
 - the engine does not open RTSP or ONVIF to the cameras (camera session limits);
 - the bot does not poll Telegram (a second poller would steal updates and duplicate replies);
-- the healthcheck is green and says `armed: the … role is held by node …`.
+- the healthcheck is green and says `armed: the … role is held by node … (epoch N)` — the
+  current holder and epoch, the same as `/nodes` shows, also after automatic takeovers.
 
 Once a minute (`check_sec`) every node checks whether it is **fit** for its roles: a bare TCP
 connect to the main stream port of every enabled camera (no RTSP request, nothing sent) and
@@ -118,8 +119,9 @@ or is not fit gets no button. After the confirmation:
 
 There are never two active nodes for a role, not even for a second. If the new node does
 not start the role, the role goes back to the old one. While the engine moves, recording
-and detection pause for about a minute; while the bot moves, it is silent for a few
-seconds and then answers from the new node — send `/nodes` again there.
+and detection pause for about a minute; while the bot moves, it is silent usually for up to
+half a minute (stop, state handover, start; up to a minute with a large bot database) and then
+answers from the new node — send `/nodes` again there.
 
 ### Which node a message comes from
 
@@ -362,8 +364,9 @@ in the group. Write down what you saw (digests, hashes, counts) — that record 
    minute. Then repeat step 3: the sessions are on the new node and gone from the old one;
    `/nodes` shows the new holder; a frame from a camera's topic comes from the new node's
    bridge. Move it back the same way and check again.
-5. **Move the bot.** `/nodes` → "bot → node" → confirm. The bot is silent for a few seconds and
-   answers from the new node. Send `/nodes` there: exactly one answer. Every message of the run
+5. **Move the bot.** `/nodes` → "bot → node" → confirm. The bot stops on the old node, hands its
+   state over and starts on the new one: usually within half a minute, up to a minute with a
+   large bot database (the panel names the size); then it answers from the new node. Send `/nodes` there: exactly one answer. Every message of the run
    has exactly one copy in the group — count them, a second poller would show up as a double.
    Move it back and count again.
 6. **A change reaches the spare node.** Edit `config.toml` in the configuration directory of

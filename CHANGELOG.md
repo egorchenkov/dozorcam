@@ -5,6 +5,32 @@ Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-11-04
+
+### Fixed
+
+- Failover with `auto = true`: switching the bot role with the /nodes buttons no longer freezes
+  the new holder for lack of quorum while all nodes are alive, and the bot state is taken from the
+  previous holder once, never again over the already running bot. A large state used to be fetched
+  by the heartbeat as well, which then fell silent longer than the quorum window.
+- The container healthcheck of an armed node (`armed: the … role is held by node … (epoch N)`) names
+  the current holder and epoch — the same as `/nodes` — also after automatic takeovers, a return
+  with the buttons and a node waking up from a pause; it used to repeat the holder seen when the
+  node went armed, and a woken node named itself.
+- When a holder freezes, the log names one reason: `no quorum of nodes — N of M heard, Q needed`;
+  a Telegram poll conflict is a separate line from the agent. The `/nodes` panel says
+  "holds the role but waits: no quorum of nodes" instead of "no quorum, or Telegram is polled by
+  another process".
+
+### Changed
+
+- Moving the bot with `/nodes`: the panel names the real term (the bot stops, hands its state over
+  and starts on the new node — usually within half a minute, up to a minute with a large bot
+  database) and the size of the state being handed over, instead of "in a few seconds".
+- State handover and the state copy for the armed nodes are compressed at gzip level 1 instead of 9:
+  SQLite databases hardly shrink further, and a state of tens of MB took seconds to pack on a small
+  node — that long the role switch waited too.
+
 ## [0.7.2] — 2026-11-04
 
 ### Added

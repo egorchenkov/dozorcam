@@ -134,6 +134,30 @@ class Agent:
         with self.lock:
             return self.assign[role or self.role]["holder"]
 
+    def assignment(self, role: str | None = None) -> tuple[str, int]:
+        """(держатель, эпоха) роли сейчас — то же, что знают /nodes и соседи."""
+        with self.lock:
+            item = self.assign[role or self.role]
+            return item["holder"], item["epoch"]
+
+    def quorum_heard(self) -> list[str]:
+        """Узлы, которых агент слышит в окне кворума (fence_sec), считая себя — для журнала
+        супервизора: замер держатель только из-за кворума, и журнал говорит, кого слышно."""
+        with self.lock:
+            return auto.reachable(self._ages(), self.cfg.fence_sec)
+
+    def state_size(self) -> int:
+        """Байты архива state роли, который поедет при переводе (0 — не известен)."""
+        with self.lock:
+            if not self.running or self.holder() != self.cfg.me:
+                return 0
+            if self.snapshot is not None:
+                return len(self.snapshot[1])
+        try:
+            return len(handover.pack(self.state_dir))
+        except handover.HandoverError:
+            return 0
+
     def report(self, running: bool) -> None:
         """Супервизор: процессы роли запущены (True) или остановлены (False)."""
         with self.changed:
@@ -269,7 +293,9 @@ class Agent:
             for role in ROLES:
                 item = (result or {}).get("assign", {}).get(role)
                 if isinstance(item, dict):
-                    self.adopt(role, item)
+                    # Передачу state роли сердцебиение не ждёт: её ведёт запрос переключения
+                    # (или сверка раз в check_sec), а не услышанные соседи замерли бы кворум.
+                    self.adopt(role, item, take_state=False)
         self._hear(found)
         self.auto_step()
 
@@ -375,8 +401,15 @@ class Agent:
         # приходят к одному ответу без переговоров.
         return self.cfg.rank(item["holder"]) < self.cfg.rank(current["holder"])
 
-    def adopt(self, role: str, item: dict) -> bool:
-        """Принять назначение, если оно новее своего. True — назначение сменилось."""
+    def adopt(self, role: str, item: dict, take_state: bool = True) -> bool:
+        """Принять назначение, если оно новее своего. True — назначение сменилось.
+
+        Назначение с передачей state этому узлу принимается вместе с state: загрузка,
+        повторная проверка и запись назначения — под disk_lock, поэтому второй поток
+        (запрос переключения, сверка, сердцебиение) не забирает state ещё раз и не
+        кладёт его поверх уже запущенной роли. take_state=False — такое назначение
+        пропустить: его примет поток, которому можно ждать загрузку.
+        """
         try:
             item = _assignment(str(item["holder"]), int(item["epoch"]), str(item.get("prev") or ""),
                                bool(item.get("carry")), bool(item.get("auto")))
@@ -390,9 +423,18 @@ class Agent:
             taking = (role == self.role and item["holder"] == self.cfg.me
                       and self.assign[role]["holder"] != self.cfg.me)
         if taking and item["carry"] and item["prev"] != self.cfg.me:
+            if not take_state:
+                return False
             with self.disk_lock:
+                with self.lock:
+                    if not self._newer(item, self.assign[role]):
+                        return False   # другой поток уже принял это назначение вместе со state
                 if not self._take_state(item["prev"]):
                     return False
+                return self._commit(role, item)
+        return self._commit(role, item)
+
+    def _commit(self, role: str, item: dict) -> bool:
         with self.changed:
             if not self._newer(item, self.assign[role]):
                 return False

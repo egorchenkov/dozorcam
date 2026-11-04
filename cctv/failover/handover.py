@@ -25,6 +25,7 @@ import tempfile
 # (журнал узла, а не состояние роли).
 KEEP = frozenset({"failover.json", "failover-config", ".handover", "diag"})
 MAX_BYTES = 64 * 1024 * 1024
+COMPRESS_LEVEL = 1
 
 
 class HandoverError(RuntimeError):
@@ -34,7 +35,9 @@ class HandoverError(RuntimeError):
 def pack(state_dir: pathlib.Path, max_bytes: int = MAX_BYTES) -> bytes:
     buffer = io.BytesIO()
     total = 0
-    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+    # Сжатие быстрое (уровень 1): базы SQLite почти не выигрывают от уровня 9, а на слабом
+    # узле он делал архив в десятки МБ секундами — столько же ждал и перевод роли.
+    with tarfile.open(fileobj=buffer, mode="w:gz", compresslevel=COMPRESS_LEVEL) as archive:
         if state_dir.is_dir():
             for entry in sorted(state_dir.iterdir()):
                 if entry.name in KEEP or entry.is_symlink():
