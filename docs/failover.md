@@ -4,9 +4,10 @@ Dozorcam can run on several machines at once so that a spare one takes over the 
 the bot. This is a separate layer on top of the container supervisor: the engine and the bot
 themselves know nothing about other nodes. Russian: [failover.ru.md](failover.ru.md).
 
-Status: **step 2 of 5** — standby mode, manual switching from the bot and one configuration
-for all nodes (the active node hands it to the armed ones). Automatic takeover when a node
-dies comes in later steps.
+Status: **step 3 of 5** — standby mode, manual switching from the bot, one configuration
+for all nodes (the active node hands it to the armed ones) and several engines behind one bot
+([sites](#sites-several-engines-behind-one-bot)). Automatic takeover when a node dies comes in
+later steps.
 
 ## Node and roles
 
@@ -177,6 +178,63 @@ Everything else is a setting of the installation: put it into `config.toml` or
 `secrets.toml`, not into `.env`. A new setting that would not travel with the handed-out
 configuration fails `tests/test_failover_config.py`.
 
+## Sites: several engines behind one bot
+
+A **site** is a set of cameras with its own engine — usually a place with its own network
+(a country house, a city flat). One bot serves several sites at once: every engine sends its
+events to the bot's receiver, and the bot puts them into the same group and the same topics —
+a topic belongs to a camera (`camera_id`), not to an engine. A camera that moves from one
+engine to another keeps its topic. The engines know nothing about each other or about sites:
+each one keeps its own camera registry and talks to the bot over the usual engine ↔ bot link.
+
+Sites are a list in the `[bot]` section of `config.toml`:
+
+```toml
+[bot]
+sites = ["dacha", "city=https://192.0.2.20:8780"]
+```
+
+- `name=address` — the site and the address of its engine's bridge; `name` alone — the bridge
+  of the bot itself (`bridge_url`; with `[failover]` it follows the engine role, so this is the
+  site whose engine moves between nodes). The name is lowercase latin, digits and dashes, up to
+  20 characters; two sites with one name or one bridge do not start.
+- No `sites` — one implicit site, exactly as before: a single-engine install is unchanged, and
+  so is a list of one site.
+- Between machines the link needs `internal_tls = true` in `[common]`: every bridge has a
+  certificate from the installation's CA, the bot uses its own client certificate for all of
+  them ([reference: TLS](reference.md#engine--bot-link-and-tls)). Without TLS only loopback
+  addresses are allowed (two engines on one machine for a test).
+- `sites` is a setting of the installation, not of a node: with `[failover]` it travels with
+  the handed-out `config.toml`, so the bot finds the same sites on whichever node it runs.
+
+What the bot does with several sites:
+
+- **the camera registry** is the cameras of all sites; a camera without its own location tag
+  is shown on the map under its site's name. A camera id that exists on two sites belongs to
+  the first one in the list (the log says so) — give cameras unique ids;
+- **a camera's buttons** (frame, clip, pause, rename, setup, threshold) go to the bridge of
+  its site, media is taken only from the bridge the event came from;
+- **`/add`** asks which site the camera is at: the network search, the activation and the
+  password check go through that site's engine, because only it can reach its cameras.
+  `/add <site>` and `/add <site> <address>` skip the question;
+- **the detector model** is one for the installation: `/model` shows the first site's catalog
+  and switches the model on every site; thresholds of all sites are in one list;
+- **a silent site** does not stop the others: its cameras stay with the "no frames" state
+  (nothing is retired), the other sites keep posting events. Only when every site is silent
+  does the bot report the bridge as down.
+
+With `[failover]` one engine — the site without an address in `sites` — is the engine role of
+the layer: it has an armed copy on another node and moves with `/nodes`. The engines of the
+other sites run on their own machines outside the layer, with their own configuration
+directory. So that their events find the bot on whichever node it runs, list the bot's
+receiver of every such node in their `events_url` — the engine sends each event to the first
+receiver that accepts it (an armed bot does not listen):
+
+```toml
+[engine]
+events_url = ["https://192.0.2.10:8781/v1/events", "https://192.0.2.20:8781/v1/events"]
+```
+
 ## Two instances on one machine
 
 For a test without a second machine: two copies of the compose project with different
@@ -214,6 +272,15 @@ events_url = "http://127.0.0.1:8791/v1/events"
   the layer; the supervisor uses only "be active / freeze"; layer settings come only from
   the shared configuration directory (from the node's environment only `CCTV_NODE`), and
   every key is documented here.
+- `tests/test_sites.py` — two real engine bridges with different cameras and one bot, all
+  over mutual TLS: the install starts with one engine and the bot creates the topics; then the
+  cameras move to two sites with their own engines, the bot restarts on the same database with
+  `sites`, creates no new topics, and events sent by both engines at once land in the old
+  topics of their cameras; a camera's pause reaches only its site's engine; `/add` asks for the
+  site; a silent site keeps its cameras and does not stop the other one; an engine with two
+  receivers in `events_url` delivers to the one that runs when the first is closed. Compatibility: no
+  `sites` gives the single bridge client exactly as before, a list of one site behaves the same
+  way; invalid lists refuse to start.
 - `tests/test_failover_config.py` — two nodes talking mutual TLS, each with its own
   configuration directory (the spare one has only `[failover]` and outdated values): the
   first revision, an edit of the directory on the active node and settings made from the
@@ -224,3 +291,5 @@ events_url = "http://127.0.0.1:8791/v1/events"
   directory, a new settings file in a role's state, a setting read outside `CCTV_*`, a
   setting that would not follow the handed-out configuration or an undocumented node-local
   key fails the test; a received revision on which the node would not start is rejected.
+  The list of sites travels the same way: added on the active node, it reaches the armed one
+  and wins over an outdated `CCTV_SITES` in its `.env`.

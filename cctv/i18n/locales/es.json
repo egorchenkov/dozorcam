@@ -613,5 +613,11 @@
  "failover.tls_triplet": "",
  "failover.no_secret": "",
  "failover.no_node": "",
- "failover.unknown_node": ""
+ "failover.unknown_node": "",
+ "config.bad_site": "",
+ "config.site_clash": "",
+ "add.site_menu": "",
+ "add.site_menu_here": "",
+ "add.site_menu_sent": "",
+ "add.searching_site": ""
 }

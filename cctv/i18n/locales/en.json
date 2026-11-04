@@ -613,5 +613,11 @@
  "failover.tls_triplet": "[failover]: tls_cert, tls_key and tls_ca are set together (https agents need all three)",
  "failover.no_secret": "[failover]: secrets.toml needs [failover] secret of at least {length} characters",
  "failover.no_node": "[failover]: CCTV_NODE (this node's name) is not set in .env",
- "failover.unknown_node": "[failover]: CCTV_NODE={name} is not among the nodes ({names})"
+ "failover.unknown_node": "[failover]: CCTV_NODE={name} is not among the nodes ({names})",
+ "config.bad_site": "CCTV_SITES: {value} — a site is “name” or “name=bridge address”; the name is lowercase latin, digits and dashes, up to 20",
+ "config.site_clash": "CCTV_SITES: {value} is used by two sites — each site needs its own name and its own bridge",
+ "add.site_menu": "Which site is the new camera at? The search and the password check go through that site’s engine.",
+ "add.site_menu_here": "Choose the site — buttons below.",
+ "add.site_menu_sent": "Choose the site in “Control”.",
+ "add.searching_site": "Searching for cameras at site {site} — the list will appear here."
 }

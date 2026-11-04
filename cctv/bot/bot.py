@@ -929,8 +929,16 @@ class CctvBot:
             if not on_console:
                 return self._t("callback.wrong_topic")
             if action == "add":
+                if self._sites() and origin is not None:
+                    await self.site_menu(origin)
+                    return self._t("add.site_menu_here")
                 asyncio.create_task(self._discover())
                 return self._t("add.searching_here")
+            if action == "addsite":
+                if not self.bridge.choose(center_at or ""):
+                    return self._t("callback.unknown")
+                asyncio.create_task(self._discover())
+                return self._t("add.searching_site", site=center_at)
             if action == "cand":
                 return await self._ask_credentials(user_id, center_at or "", "", origin)
             if action in ("act", "actall"):
@@ -1378,6 +1386,28 @@ class CctvBot:
                                 f"creds|{host}|{camera_id}|{detect}", INPUT_TTL_SEC)
         return await self._ask_for_text(dest, self._t(INPUT_PROMPTS["creds"], host=host), post=post)
 
+    async def _prober(self, camera_id: str):
+        """Проба пароля: заведённой камеры — мостом её площадки, новой — площадки из /add."""
+        pick = getattr(self.bridge, "for_camera", None)
+        if not camera_id or pick is None:
+            return self.bridge.probe
+        return (await asyncio.to_thread(pick, camera_id)).probe
+
+    # --- площадки -------------------------------------------------------------
+    def _sites(self) -> tuple[str, ...]:
+        """Площадки, если их несколько; одна — пусто: тогда бот о площадках не говорит."""
+        return tuple(self.bridge.names) if getattr(self.bridge, "multi", False) else ()
+
+    async def site_menu(self, dest: Dest) -> None:
+        """Куда заводить камеру: поиск и проба идут мостом выбранной площадки."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        ttl = self.cfg.callback_ttl_sec
+        rows = [[InlineKeyboardButton(
+            name, callback_data=f"cv:addsite:{self.state.issue_callback(CONSOLE_CAMERA, 'addsite', ttl, name)}")]
+            for name in self._sites()]
+        await self._send(dest, self._t("add.site_menu"), reply_markup=InlineKeyboardMarkup(rows))
+
     async def _apply_credentials(self, user_id: int | None, payload: str, text: str) -> str:
         """Проверить логин и пароль на самой камере и определить её параметры."""
         host, _, rest = payload.partition("|")
@@ -1388,7 +1418,8 @@ class CctvBot:
                                     f"creds|{host}|{camera_id}|{detect}", INPUT_TTL_SEC)
             return self._t("creds.need_both")
         try:
-            result = await asyncio.to_thread(self.bridge.probe, host, parts[0], parts[1], detect)
+            probe = await self._prober(camera_id)
+            result = await asyncio.to_thread(probe, host, parts[0], parts[1], detect)
             if (camera_id and not result.get("ok") and "://" not in host
                     and result.get("error_key") == "discovery.no_stream"):
                 # Камера заведена адресом потока (вне поиска): по IP её поток не
@@ -1396,7 +1427,7 @@ class CctvBot:
                 # записанном адресе — пути потоков в реестре те же (стенд 09.10).
                 stored = await self._stored_streams(camera_id)
                 if stored:
-                    result = await asyncio.to_thread(self.bridge.probe, stored[0], parts[0],
+                    result = await asyncio.to_thread(probe, stored[0], parts[0],
                                                      parts[1], stored[1])
         except BridgeError as exc:
             return self._error(exc.code)
@@ -3046,7 +3077,10 @@ class CctvBot:
 
     async def _on_add(self, user_id: int | None, args: list[str], *,
                       chat_id: int | None = None) -> str:
-        """/add — поиск камер; /add <адрес> — камера вне поиска (IP или адрес потока)."""
+        """/add — поиск камер; /add <адрес> — камера вне поиска (IP или адрес потока).
+
+        Площадок несколько — сначала выбор площадки; /add <площадка> [адрес] — сразу на неё.
+        """
         if not self.allowed(user_id):
             return self._t("no_access")
         if not self.routes.ready():
@@ -3054,6 +3088,14 @@ class CctvBot:
         console = await self.ensure_console()
         if console is None:
             return self._t("wizard.group_needs")
+        sites = self._sites()
+        if sites and args and args[0] in sites:
+            # /add <площадка> [адрес]: камера заводится мостом этой площадки.
+            self.bridge.choose(args[0])
+            args = args[1:]
+        elif sites and not args:
+            await self.site_menu(console)
+            return self._t("add.site_menu_here" if self._console_here(chat_id) else "add.site_menu_sent")
         if args:
             return await self._accept_address(user_id, " ".join(args), console)
         asyncio.create_task(self._discover())

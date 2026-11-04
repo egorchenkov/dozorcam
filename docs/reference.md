@@ -83,7 +83,7 @@ to the event snapshot with any text does the same.
 | Command | What it does |
 |---|---|
 | `/start <code>` | once, in a private chat: makes you the owner (or opens the `t.me/<bot>?start=<code>` link) |
-| `/add` | searches for cameras; `/add <IP>`, `/add rtsp://host:port/path [rtsp://… detector stream]` |
+| `/add` | searches for cameras; `/add <IP>`, `/add rtsp://host:port/path [rtsp://… detector stream]`; with several [sites](failover.md#sites-several-engines-behind-one-bot) it asks for the site first, `/add <site> [address]` |
 | `/menu` | list of cameras; in a camera topic — its buttons |
 | `/cam <name>` | a camera card here |
 | `/mode [camera\|location\|flat]` | where events go (owner) |
@@ -171,6 +171,7 @@ After editing `.env` run `dozorcam restart` (re-creates the containers).
 | `CCTV_UPDATE_CHECK` | on | `0` — do not ask GitHub Releases for a new version |
 | `CCTV_DISCOVERY_NETWORKS` | own /24 networks | where `/add` looks, e.g. `192.0.2.0/24,198.51.100.0/24` |
 | `CCTV_CHAT_ID`, `CCTV_ALLOWED_USER_IDS`, `CCTV_OWNER_IDS` | wizard | fixed group and people instead of the wizard |
+| `CCTV_SITES` (`[bot] sites`) | one site | several engines behind one bot: `name=bridge address`, `name` alone — the bot's own bridge ([sites](failover.md#sites-several-engines-behind-one-bot)) |
 | `CCTV_TELEGRAM_API` | `api.telegram.org` | your own Bot API server |
 | `CCTV_BUFFER_TMPFS` | installer: 370 MB × the cameras that fit into RAM whole (85 % of RAM with processes), at least 512 MB; `64m` with the buffer on disk | RAM for the video buffer of all cameras (a ceiling: RAM is used by recorded segments only) |
 | `CCTV_BUFFER_DIR`, `CCTV_BUFFER_DISK` | `/var/lib/cctv/buffer` (tmpfs); installer `DOZORCAM_BUFFER=disk`: `/var/lib/cctv/buffer-disk` | the buffer on disk when RAM is short: the volume `engine-buffer` or a host directory `CCTV_BUFFER_DISK` owned by uid 10001; SSD only (~0.5 MB/s of writes per camera) |
@@ -208,6 +209,8 @@ internet access is a good idea anyway. Outgoing requests: `api.telegram.org` (or
 Engine and bot talk over loopback (`127.0.0.1:8780` bridge, `:8781` bot event receiver); a
 non-loopback address without TLS refuses to start. For a split install set
 `CCTV_INTERNAL_TLS=1` (`internal_tls = true` in `[common]`) — mutual TLS both ways.
+One bot can serve several engines ([sites](failover.md#sites-several-engines-behind-one-bot));
+an engine's `events_url` may list several bot receivers — the first that accepts gets the event.
 
 ## Layout
 

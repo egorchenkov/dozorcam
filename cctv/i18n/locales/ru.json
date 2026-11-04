@@ -613,5 +613,11 @@
  "failover.tls_triplet": "[failover]: tls_cert, tls_key и tls_ca задаются вместе (агентам https нужны все три)",
  "failover.no_secret": "[failover]: в secrets.toml нужен [failover] secret не короче {length} знаков",
  "failover.no_node": "[failover]: в .env не задан CCTV_NODE (имя этого узла)",
- "failover.unknown_node": "[failover]: CCTV_NODE={name} нет среди узлов ({names})"
+ "failover.unknown_node": "[failover]: CCTV_NODE={name} нет среди узлов ({names})",
+ "config.bad_site": "CCTV_SITES: {value} — площадка задаётся как «имя» или «имя=адрес моста»; имя — строчная латиница, цифры и дефис, до 20",
+ "config.site_clash": "CCTV_SITES: {value} встречается у двух площадок — у каждой площадки своё имя и свой мост",
+ "add.site_menu": "На какой площадке новая камера? Поиск и проверка пароля пойдут через движок этой площадки.",
+ "add.site_menu_here": "Выберите площадку — кнопки ниже.",
+ "add.site_menu_sent": "Выберите площадку в «Пульте».",
+ "add.searching_site": "Ищу камеры на площадке {site} — список появится здесь."
 }

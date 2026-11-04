@@ -253,6 +253,25 @@ class ConfigDistributionTest(unittest.TestCase):
         # Ни разу роль движка не работала на двух узлах сразу и бот b не запускался.
         self.assertFalse([proc for proc in self.started if proc.node == "b" and "bot" in proc.argv])
 
+    def test_sites_travel_with_the_distributed_config(self) -> None:
+        """Шаг 3: площадки — ключ раздела [bot] раздаваемого config.toml, а не узла."""
+        from cctv.bot import config as bot_config
+
+        self.wait_for(lambda: self.same_as_local("b", "a"), what="первая ревизия на b")
+        self.write_config("a", '[engine]\nhuman_gate_mode = "enforce"\n\n'
+                               '[bot]\nchat_id = -100777\nallowed_user_ids = [7]\n'
+                               'sites = ["dacha", "city=http://127.0.0.1:18790"]\n\n')
+        self.wait_for(lambda: self.same_as_local("b", "a"), what="площадки на b")
+        # Устаревший список площадок в .env запасного узла не сильнее раздаваемого.
+        stale = {**self.node_env("b", "bot"), "CCTV_SITES": "old=http://127.0.0.1:18799"}
+        resolved = settings.apply("bot", share.effective_env("bot", stale))
+        self.assertEqual("dacha city=http://127.0.0.1:18790", resolved["CCTV_SITES"])
+        cfg = bot_config.load(resolved)
+        self.assertEqual([("dacha", "http://127.0.0.1:8780"), ("city", "http://127.0.0.1:18790")],
+                         [(site.name, site.bridge_url) for site in cfg.sites])
+        self.assertNotIn("CCTV_SITES", share.NODE_LOCAL)
+        self.assertEqual(0, len(self.alive("b")), "запасной узел запустил роль")
+
 
 # --- предохранители -------------------------------------------------------------
 STATE_NAME = re.compile(r"[\w{}.-]+\.(?:json|sqlite3|db)")

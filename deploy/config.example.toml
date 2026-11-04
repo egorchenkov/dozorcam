@@ -57,6 +57,9 @@ allowed_user_ids = [123456789]
 # update_check = false            # не спрашивать GitHub Releases о новой версии (по умолчанию — раз в сутки)
 # bridge_url = "http://127.0.0.1:8780"
 # events_port = 8781
+# Площадки — несколько движков за одним ботом (docs/failover.md): «имя=адрес моста»,
+# просто «имя» — мост bridge_url. Без списка площадка одна, как прежде.
+# sites = ["dacha", "city=https://192.0.2.20:8780"]
 # С internal_tls = true:
 # bridge_url = "https://bridge.example:8780"
 # bridge_client_cert = "/etc/cctv/tls/bot.crt"

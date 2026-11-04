@@ -11,9 +11,8 @@ import logging
 import sys
 
 from .. import settings
-from . import config
+from . import config, sites
 from .bot import CctvBot
-from .bridge import Bridge
 from .events import EventServer
 from .nodes import NodesPanel
 from .state import State
@@ -61,7 +60,8 @@ async def _amain() -> int:
     from telegram.ext import ApplicationBuilder
 
     state = State(str(cfg.db_path))
-    bridge = Bridge(cfg)
+    # Площадки (CCTV_SITES) — мост на каждую; без них — один мост, как прежде.
+    bridge = sites.connect(cfg, log=log.info)
     api = settings.telegram_api()
     application = (ApplicationBuilder().token(cfg.bot_token)
                    .base_url(f"{api}/bot").base_file_url(f"{api}/file/bot")

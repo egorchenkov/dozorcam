@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import urllib.parse
 from dataclasses import dataclass
 
@@ -23,6 +24,8 @@ DEFAULT_RUNTIME_DIR = settings.DEFAULT_BUFFER_DIR + "/bot"
 DEFAULT_BRIDGE_URL = f"http://127.0.0.1:{settings.DEFAULT_BRIDGE_PORT}"
 # Выключатели: CCTV_UPDATE_CHECK=0 (и off/false/no) — выключено.
 OFF_WORDS = ("0", "false", "no", "off")
+# Имя площадки — как имя узла: оно попадает в журнал, кнопки и раздел карты.
+SITE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 
 
 class ConfigError(i18n.CodedError, RuntimeError):
@@ -65,6 +68,48 @@ def _existing_file(path: str, key: str) -> pathlib.Path:
     if not resolved.is_file():
         raise ConfigError("file_missing", key=key, path=str(resolved))
     return resolved
+
+
+def _bridge_url(url: str, tls: bool) -> str:
+    """Адрес моста: при mTLS — только https, без TLS — только http на loopback."""
+    url = url.strip().rstrip("/")
+    parts = urllib.parse.urlsplit(url)
+    if tls and parts.scheme != "https":
+        raise ConfigError("bridge_needs_https")
+    if not tls:
+        if parts.scheme != "http":
+            raise ConfigError("bridge_needs_http")
+        if not settings.is_loopback_host(parts.hostname):
+            raise ConfigError("bridge_not_loopback")
+    return url
+
+
+@dataclass(frozen=True)
+class Site:
+    """Площадка: свой движок со своими камерами. Бот сводит площадки в одну группу."""
+    name: str
+    bridge_url: str
+
+
+def _sites(raw: str, tls: bool, base_url: str) -> tuple[Site, ...]:
+    """CCTV_SITES: «имя=адрес моста» через пробел; имя без адреса — мост CCTV_BRIDGE_URL.
+
+    Пусто — площадка одна и неявная, как в установке до площадок. Две площадки
+    на одном мосту или с одним именем — отказ старта: камеры одной из них бот
+    приписал бы другой.
+    """
+    sites: list[Site] = []
+    for chunk in raw.replace(",", " ").split():
+        name, sep, url = chunk.partition("=")
+        if not SITE_RE.match(name) or (sep and not url):
+            raise ConfigError("bad_site", value=repr(chunk))
+        sites.append(Site(name, _bridge_url(url, tls) if url else base_url))
+    for field in ("name", "bridge_url"):
+        values = [getattr(site, field) for site in sites]
+        clash = next((value for value in values if values.count(value) > 1), None)
+        if clash is not None:
+            raise ConfigError("site_clash", value=clash)
+    return tuple(sites)
 
 
 @dataclass(frozen=True)
@@ -114,6 +159,8 @@ class Config:
     # установки несколько узлов; пусто — узел один, панели нет.
     nodes_url: str = ""
     nodes_token: str = ""
+    # Площадки (CCTV_SITES): у каждой свой мост; пусто — одна, мост bridge_base_url.
+    sites: tuple[Site, ...] = ()
 
     @property
     def db_path(self) -> pathlib.Path:
@@ -142,14 +189,7 @@ def load(env: dict[str, str] | None = None) -> Config:
         if tls:
             raise ConfigError("required", key="CCTV_BRIDGE_URL")
         base_url = DEFAULT_BRIDGE_URL
-    parts = urllib.parse.urlsplit(base_url)
-    if tls and parts.scheme != "https":
-        raise ConfigError("bridge_needs_https")
-    if not tls:
-        if parts.scheme != "http":
-            raise ConfigError("bridge_needs_http")
-        if not settings.is_loopback_host(parts.hostname):
-            raise ConfigError("bridge_not_loopback")
+    base_url = _bridge_url(base_url, tls)
 
     state_dir = pathlib.Path(env.get("CCTV_STATE_DIR") or DEFAULT_STATE_DIR)
     runtime_dir = pathlib.Path(env.get("CCTV_RUNTIME_DIR") or DEFAULT_RUNTIME_DIR)
@@ -211,4 +251,5 @@ def load(env: dict[str, str] | None = None) -> Config:
         update_url=(env.get("CCTV_UPDATE_URL") or "").strip(),
         nodes_url=(env.get("CCTV_NODES_URL") or "").strip(),
         nodes_token=(env.get("CCTV_NODES_TOKEN") or "").strip(),
+        sites=_sites(env.get("CCTV_SITES") or "", tls, base_url),
     )

@@ -5,6 +5,32 @@ Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-11-04
+
+Failover, step 3 of 5: sites — several engines behind one bot, each with its own cameras,
+events in the same topics as before.
+
+### Added
+- Sites: one bot serves several engines at once, each with its own cameras and its own
+  network — `sites = ["dacha", "city=https://192.0.2.20:8780"]` in `[bot]` (`name=address` is
+  the bridge of that site's engine, a name alone is the bot's own `bridge_url`). The camera
+  registry is the cameras of all sites; a topic belongs to a camera, not to an engine, so
+  events keep landing in the old topics and a camera that moves to another engine keeps its
+  topic. A camera's buttons (frame, clip, pause, rename, setup, threshold) go to the engine
+  of its site; `/add` asks which site the camera is at (`/add <site>` skips the question);
+  `/model` switches the model on every site. A silent site keeps its cameras with the
+  "no frames" state and does not stop the others. See
+  [docs/failover.md](docs/failover.md#sites-several-engines-behind-one-bot).
+- The engine's `events_url` may be a list of receivers: an event goes to the first one that
+  accepts it, so an engine outside the failover layer finds the bot on whichever node it
+  runs. Every address is checked at start.
+- With `[failover]` the list of sites travels with the handed-out configuration, like any
+  other setting of the installation.
+
+### Changed
+- Without `sites` nothing changes: a single-engine install, and a list of one site, work
+  exactly as before. Two sites with one name or one bridge, or a bad name, refuse to start.
+
 ## [0.5.0] — 2026-11-04
 
 Failover, step 2 of 5: one configuration for all nodes — the node that holds a role hands its

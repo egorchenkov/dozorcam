@@ -1191,22 +1191,25 @@ class Bridge:
             if event["event_id"] in self._event_ids:
                 return
             self._event_ids[event["event_id"]] = time.time()
-        try:
-            context = self.events_context()
-            payload = json.dumps(event).encode()
-            req = urllib.request.Request(self.events_url, payload, {"content-type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, context=context, timeout=10):
-                pass
-        except (OSError, urllib.error.URLError, ValueError):
-            pass  # Never log URL, certificate paths, or camera-specific diagnostics.
+        payload = json.dumps(event).encode()
+        # Приёмников может быть несколько (бот, который переезжает между узлами): событие
+        # получает первый, кто принял; у не запущенного бота порт закрыт — идём дальше.
+        for url in self.events_url.split():
+            try:
+                context = self.events_context(url)
+                req = urllib.request.Request(url, payload, {"content-type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, context=context, timeout=10):
+                    return
+            except (OSError, urllib.error.URLError, ValueError):
+                continue  # Never log URL, certificate paths, or camera-specific diagnostics.
 
-    def events_context(self) -> ssl.SSLContext | None:
+    def events_context(self, url: str | None = None) -> ssl.SSLContext | None:
         """https — только mTLS (клиентский сертификат + CA бота); http — только loopback.
 
         Открытый http за пределы узла запрещён: событие несёт ссылку на кадр, и
         без TLS её прочёл бы любой в сети. Такой адрес — отказ, а не тихий фолбэк.
         """
-        parts = urllib.parse.urlsplit(self.events_url or "")
+        parts = urllib.parse.urlsplit(url if url is not None else (self.events_url or ""))
         if parts.scheme == "https":
             context = ssl.create_default_context(cafile=self.events_ca)
             context.load_cert_chain(self.events_cert, self.events_key)
@@ -1379,7 +1382,8 @@ def check_events_url(bridge: Bridge) -> None:
     """Открытый http к боту не на loopback — отказ старта, а не тихо потерянные события."""
     if bridge.events_url:
         try:
-            bridge.events_context()
+            for url in bridge.events_url.split():
+                bridge.events_context(url)
         except ValueError as exc:
             raise SystemExit(f"FAIL: CCTV_EVENTS_URL — {exc}") from exc
 
