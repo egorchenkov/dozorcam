@@ -78,6 +78,10 @@ A new camera starts with person detection **off**: look at the scene, then turn 
 around the moment the person was seen, even if the detector was a few seconds behind; a reply
 to the event snapshot with any text does the same.
 
+With several nodes ([failover](failover.md#which-node-a-message-comes-from)) events, frames,
+clips and the camera card end with `Node: a` or `Nodes: engine b · bot a` — which node shot
+the picture and which bot sent it; with one node there is no such line.
+
 ## Commands and buttons
 
 | Command | What it does |

@@ -77,7 +77,8 @@ class Sites:
         for name, answer in answers.items():
             if isinstance(answer, BridgeError):
                 with self._lock:
-                    found = [dataclasses.replace(camera, status=UNREACHABLE) for camera in self._last.get(name, [])]
+                    found = [dataclasses.replace(camera, status=UNREACHABLE, origin="")
+                             for camera in self._last.get(name, [])]
             else:
                 found, storage = answer
                 with self._lock:

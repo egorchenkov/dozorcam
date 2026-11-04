@@ -78,6 +78,9 @@ class ModelMenuTest(unittest.IsolatedAsyncioTestCase):
         self.models = model_switch.ModelManager(self.engine.state_dir, build=fake_build, log=lambda _l: None)
         self.holder = self.models.register("dacha")
         self.models.start()
+        # Поток смены пишет state/ после ответа боту; до удаления каталога дождаться его
+        # заявки и не пускать следующую, иначе rmtree ловит новый файл («Directory not empty»).
+        self.addCleanup(self.models._switch_lock.acquire)
 
         self.cfg = dataclasses.replace(make_config(root), lang=self.lang)
         self.state = State(":memory:")

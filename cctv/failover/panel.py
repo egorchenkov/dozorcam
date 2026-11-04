@@ -80,7 +80,9 @@ def view(agent, lang: str | None, *, statuses=None) -> dict:
     lang = i18n.resolve(lang)
     found = agent.statuses() if statuses is None else statuses
     cfg = agent.cfg
-    lines = [_t(lang, "nodes.title"), _t(lang, "nodes.check_every", sec=cfg.check_sec)]
+    # Панель отдаёт агент бота своего узла — этот узел и отвечает в Telegram.
+    lines = [_t(lang, "nodes.title"), _t(lang, "nodes.answering", name=cfg.me),
+             _t(lang, "nodes.check_every", sec=cfg.check_sec)]
     if cfg.auto:
         lines.append(_t(lang, "nodes.auto_on", sec=cfg.dead_after_sec, quorum=cfg.quorum, total=len(cfg.nodes)))
     else:

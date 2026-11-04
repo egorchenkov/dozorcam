@@ -47,6 +47,8 @@ class Camera:
     motion_state: str = "unknown"
     motion_reason: str = ""
     last_motion_at: str | None = None
+    # Узел движка, отдавшего реестр (подпись при нескольких узлах); пусто — один узел.
+    origin: str = ""
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,7 @@ class Bridge:
     def registry(self) -> tuple[list[Camera], Storage | None]:
         """Камеры и состояние диска одним запросом: сторож опрашивает их вместе."""
         payload = self._json("GET", "/v1/cameras")
+        origin = str(payload.get("origin") or "").strip()[:64]
         cameras = []
         for item in payload.get("cameras", []):
             camera_id = str(item.get("camera_id", ""))
@@ -125,6 +128,7 @@ class Bridge:
                 motion_state=str(motion.get("state") or "unknown"),
                 motion_reason=str(motion.get("reason") or ""),
                 last_motion_at=motion.get("last_motion_at"),
+                origin=origin,
             ))
         raw = payload.get("storage")
         storage = None

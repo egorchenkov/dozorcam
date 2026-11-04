@@ -47,6 +47,8 @@ class Event:
     site: str | None = None
     source: str | None = None
     media: Media | None = None
+    # Узел, чей движок прислал событие (подпись при нескольких узлах); None — один узел.
+    origin: str | None = None
 
 
 def _text(payload: dict, key: str, *, required: bool = True) -> str:
@@ -122,6 +124,7 @@ def normalize_event(payload: object, *, media_scheme: str = "https") -> Event:
         site=_text(payload, "site", required=False) or None,
         source=_text(payload, "source", required=False) or None,
         media=media,
+        origin=_text(payload, "origin", required=False)[:64] or None,
     )
 
 

@@ -213,6 +213,9 @@ class Bridge:
         self.events_cert = os.environ.get("CCTV_EVENTS_CERT")
         self.events_key = os.environ.get("CCTV_EVENTS_KEY")
         self.events_ca = os.environ.get("CCTV_EVENTS_CA")
+        # Подпись узла, откуда идут кадры и клипы (CCTV_ORIGIN от супервизора при
+        # нескольких узлах): уходит в каждое событие и в реестр; пусто — без подписи.
+        self.origin = (os.environ.get("CCTV_ORIGIN") or "").strip()
         self.max_snapshot = int(os.environ.get("CCTV_MAX_SNAPSHOT_BYTES", str(8 * 1024 * 1024)))
         self.max_clip = int(os.environ.get("CCTV_MAX_CLIP_BYTES", str(48 * 1024 * 1024)))
         self._requests: dict[str, float] = {}
@@ -394,7 +397,10 @@ class Bridge:
                             "title": entry.get("title") or camera.title, "site": camera.site,
                             "status": status, "last_frame_at": latest,
                             "motion": self.motion_health(camera.camera_id)})
-        return {"cameras": cameras, "storage": self.storage_health()}
+        result = {"cameras": cameras, "storage": self.storage_health()}
+        if self.origin:
+            result["origin"] = self.origin
+        return result
 
     def motion_health(self, camera_id: str) -> dict:
         """Живость детектора берётся из его пульса: детектор — соседний процесс.
@@ -1191,6 +1197,8 @@ class Bridge:
             if event["event_id"] in self._event_ids:
                 return
             self._event_ids[event["event_id"]] = time.time()
+        if self.origin:
+            event = {**event, "origin": self.origin}
         payload = json.dumps(event).encode()
         # Приёмников может быть несколько (бот, который переезжает между узлами): событие
         # получает первый, кто принял; у не запущенного бота порт закрыт — идём дальше.

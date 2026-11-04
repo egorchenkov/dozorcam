@@ -625,5 +625,10 @@
  "add.site_menu": "",
  "add.site_menu_here": "",
  "add.site_menu_sent": "",
- "add.searching_site": ""
+ "add.searching_site": "",
+ "origin.same": "",
+ "origin.both": "",
+ "origin.engine": "",
+ "origin.bot": "",
+ "nodes.answering": ""
 }

@@ -5,6 +5,19 @@ Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-11-04
+
+### Added
+
+- With `[failover]` every message about a camera names its nodes: event posts, frames from
+  📷 Frame and clips end with `Node: a` when the engine that shot the picture and the bot
+  that sent it run on one node, or `Nodes: engine b · bot a` when they run on different
+  nodes (with sites — the engine of that camera's site); a merged post keeps the line. The
+  camera card (🔄 Status, the pinned panel, `/cam`) shows the same line, and `/nodes` starts
+  with "The bot answers from node a.". After a takeover the next message already names the
+  new node. An installation with one node and no `[failover]` has no such line — messages
+  are as before ([docs/failover.md](docs/failover.md#which-node-a-message-comes-from)).
+
 ## [0.7.1] — 2026-11-04
 
 ### Added

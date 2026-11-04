@@ -681,6 +681,10 @@ class CctvBot:
             lines.append(self._t("panel.bridge_silent"))
             lines.append(self._t("panel.detection", state=self._t(MOTION_STATE_TEXT["unknown"])))
         lines.append(self.notify_line(camera_id, viewer))
+        # Узлы движка камеры и этого бота — при нескольких узлах (см. origin_line).
+        where = self.origin_line(getattr(camera, "origin", ""))
+        if where:
+            lines.append(where)
         return "\n".join(lines)
 
     def _subscribers(self, camera_id: str) -> list[int]:
@@ -1815,13 +1819,30 @@ class CctvBot:
             return True
         return dest is not None and dest != self.routes.camera_topic(camera_id)
 
+    def origin_line(self, engine: str | None) -> str:
+        """Строка «откуда»: узел движка, приславшего кадр или клип, и узел этого бота.
+
+        Имена ставит супервизор (CCTV_ORIGIN) только при нескольких узлах: у одного
+        узла строки нет. После перехвата роли подпись сама называет новый узел —
+        её несёт каждое событие и задаёт запуск процесса бота.
+        """
+        engine, bot = (engine or "").strip(), getattr(self.cfg, "origin", "")
+        if engine and bot:
+            if engine == bot:
+                return self._t("origin.same", node=bot)
+            return self._t("origin.both", engine=engine, bot=bot)
+        if engine:
+            return self._t("origin.engine", engine=engine)
+        return self._t("origin.bot", bot=bot) if bot else ""
+
     def _caption(self, camera_id: str, what: str, stamp: str | None, *, merged: int = 0,
-                 last_at: str | None = None, extra: str = "", dest: Dest | None = None) -> str:
-        """Подпись поста о камере: что и когда, «+N за минуту», хэштеги камеры и локации.
+                 last_at: str | None = None, extra: str = "", dest: Dest | None = None,
+                 origin: str | None = None) -> str:
+        """Подпись поста о камере: что и когда, «+N за минуту», узлы, хэштеги камеры и локации.
 
         В своей теме камеры имя не нужно — его даёт тема; в общей теме локации,
         в плоском чате и в личке подпись начинается с имени камеры, иначе ленту
-        не различить.
+        не различить. `origin` — узел движка события (см. origin_line).
         """
         head = f"{what}: {self._time(stamp)}"
         if self._named(camera_id, dest):
@@ -1831,6 +1852,9 @@ class CctvBot:
             lines.append(self._t("event.merged", count=merged, time=human_clock(last_at, self.zone)))
         if extra:
             lines.append(extra)
+        where = self.origin_line(origin)
+        if where:
+            lines.append(where)
         tags = self.routes.hashtags(camera_id)
         if tags:
             lines.append(tags)
@@ -1868,12 +1892,13 @@ class CctvBot:
         silent = lambda dest: self.routes.silent_for(event.camera_id, dest)
         if event.media is None:
             for dest in dests:
-                await self._send(dest, self._caption(event.camera_id, what, stamp,
+                await self._send(dest, self._caption(event.camera_id, what, stamp, origin=event.origin,
                                                      extra=self._t("event.no_frame"), dest=dest),
                                  disable_notification=silent(dest))
             return
         await self._publish(event, dests, "snapshot",
-                            lambda dest: self._caption(event.camera_id, what, stamp, dest=dest),
+                            lambda dest: self._caption(event.camera_id, what, stamp, dest=dest,
+                                                       origin=event.origin),
                             silent=silent, person=is_person)
 
     async def _on_media_ready(self, event: Event) -> None:
@@ -1906,7 +1931,8 @@ class CctvBot:
         stamp = event.captured_at or event.occurred_at or utcnow()
         what = self._t("media.frame" if kind == "snapshot" else "media.clip")
         await self._publish(event, dests, kind,
-                            lambda dest: self._caption(event.camera_id, what, stamp, dest=dest),
+                            lambda dest: self._caption(event.camera_id, what, stamp, dest=dest,
+                                                       origin=event.origin),
                             silent=silent, reply_to=reply_to)
 
     async def _on_media_failed(self, event: Event) -> None:
@@ -1985,7 +2011,7 @@ class CctvBot:
         captured = event.captured_at or event.occurred_at or utcnow()
         what = self._t("event.person" if person or post.person else "event.motion")
         caption = self._caption(event.camera_id, what, post.first_at, merged=post.merged + 1,
-                                last_at=event.occurred_at or captured, dest=dest)
+                                last_at=event.occurred_at or captured, dest=dest, origin=event.origin)
         from telegram import InputMediaPhoto
 
         try:

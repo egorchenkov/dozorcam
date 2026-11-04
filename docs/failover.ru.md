@@ -118,6 +118,26 @@ CCTV_NODE=dacha
 переезжает бот, он молчит несколько секунд и отвечает уже с нового узла — пришлите там
 `/nodes` ещё раз.
 
+### С какого узла сообщение
+
+С 0.7.2 при `[failover]` каждое сообщение о камере говорит, через какие узлы оно пришло, —
+после перехвата роли это видно прямо в ленте:
+
+- посты событий, кадры по 📷 Кадр и клипы заканчиваются строкой `Узел: a`, если движок,
+  снявший картинку, и бот, который её прислал, работают на одном узле, и
+  `Узлы: движок b · бот a`, если на разных; пост, склеенный «+N за минуту», строку сохраняет;
+- карточка камеры (🔄 Статус, закреплённая панель, `/cam`) показывает ту же строку для
+  движка, который обслуживает камеру сейчас;
+- `/nodes` начинается со строки «Сейчас отвечает бот узла a.» — узла, чей бот ответил.
+
+Движок подписывает каждое событие именем своего узла (при площадках — движок площадки этой
+камеры, см. [Площадки](#площадки-несколько-движков-за-одним-ботом)); бот добавляет своё. После
+переключения следующее же событие называет новый узел: имя приходит с каждым событием и с
+каждым запуском процесса бота, ничего обновлять руками не нужно. Движок площадки вне
+`[failover]` события не подписывает: в его постах только `Узел: бот a`. Имена — `name` из
+`[[failover.nodes]]`; супервизор передаёт каждой роли имя её узла в `CCTV_ORIGIN`. На
+установке с одним узлом без `[failover]` такой строки нет вовсе — сообщения прежние.
+
 ### Что переезжает с ролью
 
 Только **каталог state роли на диске**: реестр камер и калибровки движка, база бота (темы,
@@ -220,7 +240,7 @@ chmod 600 config/secrets.toml
 раздал активный. Своё значение сохраняют только узловые ключи:
 
 - имя узла и пути внутри контейнера: `CCTV_NODE`, `CCTV_CONFIG_DIR`, `CCTV_STATE_DIR`, `CCTV_BUFFER_DIR`, `CCTV_STORAGE_ROOT`, `CCTV_RUNTIME_DIR`, `CCTV_SUPERVISOR_STATUS`, `CCTV_CAMERA_CONFIG`, `CCTV_PROXY_CAMERA_CONFIG`, `CCTV_RUNTIME_CAMERA_CONFIG`, `CCTV_REGISTRY_FILE`, `CCTV_REGISTRY_SEED`, `CCTV_PROVISION_SOCKET`, `CCTV_PROVISION_BACKUPS`, `CCTV_PROVISION_UNITS`, `CCTV_RETENTION_GUARD`, `CCTV_MODEL_DIRS`, `CCTV_NOTIFY_STATE`
-- адреса и порты этой машины: `CCTV_BIND`, `CCTV_PORT`, `CCTV_BRIDGE_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`, `CCTV_POLL_CONFLICT`
+- адреса и порты этой машины: `CCTV_BIND`, `CCTV_PORT`, `CCTV_BRIDGE_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`, `CCTV_POLL_CONFLICT`, `CCTV_ORIGIN`
 - свои сертификаты связи движок↔бот: `CCTV_BRIDGE_CA`, `CCTV_BRIDGE_CLIENT_CERT`, `CCTV_BRIDGE_CLIENT_KEY`, `CCTV_CLIENT_CA`, `CCTV_SERVER_CERT`, `CCTV_SERVER_KEY`, `CCTV_EVENTS_CA`, `CCTV_EVENTS_CERT`, `CCTV_EVENTS_CLIENT_CA`, `CCTV_EVENTS_KEY`, `CCTV_BRIDGE_USER`, `CCTV_BRIDGE_GROUP`
 - её сеть и сервер Bot API: `CCTV_DISCOVERY_NETWORKS`, `CCTV_TELEGRAM_API`
 - её память, диск и процессор: `CCTV_BUFFER_MAX_BYTES`, `CCTV_BUFFER_SEGMENTS`, `CCTV_MAX_TOTAL_BYTES`, `CCTV_STORAGE_BUDGET_BYTES`, `CCTV_MIN_FREE_BYTES`, `CCTV_CV_THREADS`, `CCTV_DETECT_NICE`, `CCTV_PERSON_INFER_SLOTS`

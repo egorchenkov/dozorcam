@@ -121,6 +121,27 @@ not start the role, the role goes back to the old one. While the engine moves, r
 and detection pause for about a minute; while the bot moves, it is silent for a few
 seconds and then answers from the new node — send `/nodes` again there.
 
+### Which node a message comes from
+
+Since 0.7.2, with `[failover]` every message about a camera says which nodes it came
+through, so after a takeover you see it in the feed itself:
+
+- event posts, frames from 📷 Frame and clips end with a line `Node: a` when the engine
+  that shot the picture and the bot that sent it run on one node, and `Nodes: engine b · bot a`
+  when they run on different nodes; a post merged by "+N within a minute" keeps the line;
+- the camera card (🔄 Status, the pinned panel, `/cam`) shows the same line for the engine
+  that serves the camera now;
+- `/nodes` starts with "The bot answers from node a." — the node whose bot replied.
+
+The engine signs each event with the name of its node (with sites — the engine of that
+camera's site, see [Sites](#sites-several-engines-behind-one-bot)); the bot adds its own. After
+a switch the next event already names the new node: the name comes with every event and with
+every start of the bot process, nothing has to be refreshed by hand. An engine of a site that
+is not in `[failover]` does not sign its events: its posts show only `Node: bot a`. The names
+are the `name` of `[[failover.nodes]]`; the supervisor passes each role the name of its node
+as `CCTV_ORIGIN`. An installation with one node and no `[failover]` has no such line at all —
+the messages are as before.
+
 ### What moves with a role
 
 Only the role's **state directory on disk**: the camera registry and calibrations of the
@@ -227,7 +248,7 @@ not override what the active node handed out. Only node-local keys keep the node
 value:
 
 - node name and paths inside the container: `CCTV_NODE`, `CCTV_CONFIG_DIR`, `CCTV_STATE_DIR`, `CCTV_BUFFER_DIR`, `CCTV_STORAGE_ROOT`, `CCTV_RUNTIME_DIR`, `CCTV_SUPERVISOR_STATUS`, `CCTV_CAMERA_CONFIG`, `CCTV_PROXY_CAMERA_CONFIG`, `CCTV_RUNTIME_CAMERA_CONFIG`, `CCTV_REGISTRY_FILE`, `CCTV_REGISTRY_SEED`, `CCTV_PROVISION_SOCKET`, `CCTV_PROVISION_BACKUPS`, `CCTV_PROVISION_UNITS`, `CCTV_RETENTION_GUARD`, `CCTV_MODEL_DIRS`, `CCTV_NOTIFY_STATE`
-- addresses and ports of this machine: `CCTV_BIND`, `CCTV_PORT`, `CCTV_BRIDGE_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`, `CCTV_POLL_CONFLICT`
+- addresses and ports of this machine: `CCTV_BIND`, `CCTV_PORT`, `CCTV_BRIDGE_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`, `CCTV_POLL_CONFLICT`, `CCTV_ORIGIN`
 - its own engine↔bot certificates: `CCTV_BRIDGE_CA`, `CCTV_BRIDGE_CLIENT_CERT`, `CCTV_BRIDGE_CLIENT_KEY`, `CCTV_CLIENT_CA`, `CCTV_SERVER_CERT`, `CCTV_SERVER_KEY`, `CCTV_EVENTS_CA`, `CCTV_EVENTS_CERT`, `CCTV_EVENTS_CLIENT_CA`, `CCTV_EVENTS_KEY`, `CCTV_BRIDGE_USER`, `CCTV_BRIDGE_GROUP`
 - its network and Bot API server: `CCTV_DISCOVERY_NETWORKS`, `CCTV_TELEGRAM_API`
 - its memory, disk and CPU: `CCTV_BUFFER_MAX_BYTES`, `CCTV_BUFFER_SEGMENTS`, `CCTV_MAX_TOTAL_BYTES`, `CCTV_STORAGE_BUDGET_BYTES`, `CCTV_MIN_FREE_BYTES`, `CCTV_CV_THREADS`, `CCTV_DETECT_NICE`, `CCTV_PERSON_INFER_SLOTS`
