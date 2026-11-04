@@ -35,8 +35,8 @@ SUPERVISOR = PACKAGE / "container.py"
 # holder/cfg — для журнала и статуса; wiring/panel_env — окружение процессов роли;
 # stop — остановка самого агента.
 SUPERVISOR_USES = {"active", "report", "wait", "holder", "cfg", "wiring", "panel_env", "stop"}
-# Что слой кладёт в окружение процессов роли.
-CHILD_ENV = {"CCTV_BRIDGE_URL", "CCTV_EVENTS_URL", "CCTV_NODES_URL", "CCTV_NODES_TOKEN"}
+# Что слой кладёт в окружение процессов роли (CCTV_PUBLIC_URL — адрес своего моста для ссылок на медиа).
+CHILD_ENV = {"CCTV_BRIDGE_URL", "CCTV_EVENTS_URL", "CCTV_PUBLIC_URL", "CCTV_NODES_URL", "CCTV_NODES_TOKEN"}
 
 
 def imports_of(path: pathlib.Path) -> set[str]:

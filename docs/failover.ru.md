@@ -164,7 +164,7 @@ chmod 600 config/secrets.toml
 раздал активный. Своё значение сохраняют только узловые ключи:
 
 - имя узла и пути внутри контейнера: `CCTV_NODE`, `CCTV_CONFIG_DIR`, `CCTV_STATE_DIR`, `CCTV_BUFFER_DIR`, `CCTV_STORAGE_ROOT`, `CCTV_RUNTIME_DIR`, `CCTV_SUPERVISOR_STATUS`, `CCTV_CAMERA_CONFIG`, `CCTV_PROXY_CAMERA_CONFIG`, `CCTV_RUNTIME_CAMERA_CONFIG`, `CCTV_REGISTRY_FILE`, `CCTV_REGISTRY_SEED`, `CCTV_PROVISION_SOCKET`, `CCTV_PROVISION_BACKUPS`, `CCTV_PROVISION_UNITS`, `CCTV_RETENTION_GUARD`, `CCTV_MODEL_DIRS`, `CCTV_NOTIFY_STATE`
-- адреса и порты этой машины: `CCTV_BIND`, `CCTV_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`
+- адреса и порты этой машины: `CCTV_BIND`, `CCTV_PORT`, `CCTV_BRIDGE_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`
 - свои сертификаты связи движок↔бот: `CCTV_BRIDGE_CA`, `CCTV_BRIDGE_CLIENT_CERT`, `CCTV_BRIDGE_CLIENT_KEY`, `CCTV_CLIENT_CA`, `CCTV_SERVER_CERT`, `CCTV_SERVER_KEY`, `CCTV_EVENTS_CA`, `CCTV_EVENTS_CERT`, `CCTV_EVENTS_CLIENT_CA`, `CCTV_EVENTS_KEY`, `CCTV_BRIDGE_USER`, `CCTV_BRIDGE_GROUP`
 - её сеть и сервер Bot API: `CCTV_DISCOVERY_NETWORKS`, `CCTV_TELEGRAM_API`
 - её память, диск и процессор: `CCTV_BUFFER_MAX_BYTES`, `CCTV_BUFFER_SEGMENTS`, `CCTV_MAX_TOTAL_BYTES`, `CCTV_STORAGE_BUDGET_BYTES`, `CCTV_MIN_FREE_BYTES`, `CCTV_CV_THREADS`, `CCTV_DETECT_NICE`, `CCTV_PERSON_INFER_SLOTS`
@@ -249,6 +249,49 @@ bot_agent = "http://127.0.0.1:8793"
 bridge_url = "http://127.0.0.1:8790"
 events_url = "http://127.0.0.1:8791/v1/events"
 ```
+
+## Живой прогон на двух машинах
+
+Порядок, в котором слой проверяют на настоящих машинах — перед релизом или после новой
+установки, с живыми камерами и живой группой Telegram. Сообщения прогона в группе помечайте
+как тест. Записывайте увиденное (digest, хеши, счётчики) — эта запись и есть доказательство.
+
+1. **Разложить узлы.** Две машины с Docker (архитектуры могут быть разными — образ
+   multi-arch). На обеих: один `compose.yml`, один образ, закреплённый тегом или digest
+   (`CCTV_IMAGE_TAG`), один каталог конфига (`config.toml` с `[failover]`, у каждого узла
+   `address`, `bridge_url` и `events_url`, `internal_tls = true`, файлы `tls_*` от одного CA;
+   `secrets.toml`; `cameras.json`). Файлы `.env` различаются одной строкой — `CCTV_NODE`.
+   `docker compose up -d` на обеих. Узел с приоритетом 1 при первом старте берёт обе роли,
+   второй сообщает `armed` в healthcheck.
+2. **Доказать, что они одинаковые.** На обоих узлах сравнить `sha256sum` файла `compose.yml`
+   и каждого файла каталога конфига, а также `docker inspect --format '{{index
+   .RepoDigests 0}}'` каждого контейнера — один digest на обеих машинах. `diff` двух `.env`:
+   различаться может только `CCTV_NODE`.
+3. **Кто держит камеры.** На каждом узле посчитать установленные TCP-сессии к RTSP-порту
+   камер: `ss -Htn state established '( dport = :554 )'`. Они есть только у узла, который
+   держит роль engine; у узла наготове их нет и он их не открывает — голый TCP-connect
+   проверки пригодности установленным не остаётся.
+4. **Перевести движок.** `/nodes` → «engine → узел» → подтвердить. Запись стоит около
+   минуты. Повторить шаг 3: сессии на новом узле и исчезли со старого; `/nodes` показывает
+   нового держателя; кадр из темы камеры приходит с моста нового узла. Перевести обратно тем же
+   способом и проверить снова.
+5. **Перевести бота.** `/nodes` → «bot → узел» → подтвердить. Бот молчит несколько секунд и
+   отвечает уже с нового узла. Прислать там `/nodes`: ровно один ответ. У каждого сообщения
+   прогона в группе ровно одна копия — посчитать, второй опрашивающий проявился бы дублем.
+   Перевести обратно и посчитать снова.
+6. **Правка доезжает до запасного.** Поправить `config.toml` в каталоге конфига узла, который
+   держит роль engine (безвредный ключ, например `check_sec`). Через несколько секунд она есть
+   в копии на узле наготове:
+   `docker compose exec engine cat /var/lib/cctv/state/failover-config/config.toml`.
+   Вернуть как было и проверить снова; правка на узле наготове раздаваться не должна (лог об
+   этом говорит).
+7. **Вторая площадка**, если есть: её движок работает вне слоя с обоими приёмниками в
+   `events_url`. После переезда бота (шаг 5) события второй площадки по-прежнему приходят, а её
+   камеры всё время держит её собственный движок.
+
+Что считается дефектом: два узла с сессиями к одной камере в любой момент, задвоенное
+сообщение в группе, красный healthcheck на любом узле, правка, не доехавшая до запасного,
+роль, не вернувшаяся на прежний узел.
 
 ## Чем проверено
 

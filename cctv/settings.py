@@ -202,10 +202,12 @@ def defaults(component: str, env: MutableMapping[str, str]) -> dict[str, str]:
         })
         if not tls:
             # Без TLS приёмник бота — на том же узле; с TLS адрес задаётся явно.
-            result["CCTV_EVENTS_URL"] = f"http://127.0.0.1:{DEFAULT_EVENTS_PORT}/v1/events"
+            # Порт приёмника — тот же CCTV_EVENTS_PORT, что у бота этого узла (compose).
+            events_port = env.get("CCTV_EVENTS_PORT") or str(DEFAULT_EVENTS_PORT)
+            result["CCTV_EVENTS_URL"] = f"http://127.0.0.1:{events_port}/v1/events"
     else:
         result.update({
-            "CCTV_BRIDGE_URL": f"{scheme}://127.0.0.1:{DEFAULT_BRIDGE_PORT}",
+            "CCTV_BRIDGE_URL": f"{scheme}://127.0.0.1:{env.get('CCTV_BRIDGE_PORT') or DEFAULT_BRIDGE_PORT}",
             "CCTV_EVENTS_HOST": "127.0.0.1",
             "CCTV_EVENTS_PORT": str(DEFAULT_EVENTS_PORT),
         })

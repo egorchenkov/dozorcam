@@ -106,16 +106,27 @@ class Agent:
             self.changed.wait(timeout)
 
     def wiring(self) -> dict[str, str]:
-        """Адрес соседней роли для процессов этой: мост для бота, приёмник событий для движка."""
+        """Адреса для процессов роли: мост для бота, приёмник событий для движка.
+
+        Движку — ещё и адрес его собственного моста (bridge_url своего узла) как
+        CCTV_PUBLIC_URL: по нему строятся ссылки на медиа в событиях, а бот берёт медиа
+        только с того адреса моста, который знает. Без этого ссылка вела на bind
+        (0.0.0.0) и кадр с моста другого узла бот отвергал.
+        """
         other = "bot" if self.role == "engine" else "engine"
         node = self.cfg.node(self.holder(other))
+        result: dict[str, str] = {}
+        if self.role == "engine":
+            own = self.cfg.node(self.cfg.me)
+            if own is not None and own.bridge_url:
+                result["CCTV_PUBLIC_URL"] = own.bridge_url
         if node is None:
-            return {}
+            return result
         if self.role == "bot" and node.bridge_url:
-            return {"CCTV_BRIDGE_URL": node.bridge_url}
+            result["CCTV_BRIDGE_URL"] = node.bridge_url
         if self.role == "engine" and node.events_url:
-            return {"CCTV_EVENTS_URL": node.events_url}
-        return {}
+            result["CCTV_EVENTS_URL"] = node.events_url
+        return result
 
     def panel_env(self) -> dict[str, str]:
         """Боту — адрес панели узлов и одноразовый (на запуск супервизора) ключ к ней."""

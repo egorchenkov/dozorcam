@@ -255,6 +255,14 @@ class Supervisor:
             return env
         return {**env, **self.wiring, **self.layer.panel_env()}
 
+    def wired_env(self, env: dict[str, str]) -> dict[str, str]:
+        """Окружение для проверки конфига перед запуском — с адресами соседней роли.
+
+        Проверять надо то, с чем процессы запустятся: иначе loopback-адрес моста из
+        compose (http) валил старт бота с mTLS, хотя слой подставил бы https соседа.
+        """
+        return {**env, **self.layer.wiring()} if self.layer is not None else dict(env)
+
     def hold_armed(self, fingerprint: tuple) -> None:
         """Узел наготове: процессы роли не запущены, ждём назначения или правки конфига."""
         self.stop_all()
@@ -381,7 +389,7 @@ class EngineSupervisor(Supervisor):
     def prepare(self):
         env = dict(self.base_env)
         try:
-            resolved = settings.apply("engine", dict(env))
+            resolved = settings.apply("engine", self.wired_env(env))
         except settings.SettingsError as exc:
             return "no_config", self.reason(exc)
         lang = self.resolve_lang(resolved)
@@ -447,7 +455,7 @@ class BotSupervisor(Supervisor):
 
         env = dict(self.base_env)
         try:
-            resolved = settings.apply("bot", dict(env))
+            resolved = settings.apply("bot", self.wired_env(env))
             self.resolve_lang(resolved)
             cfg = bot_config.load(resolved)
         except (settings.SettingsError, bot_config.ConfigError, ValueError) as exc:
@@ -521,8 +529,11 @@ def health() -> int:
     if role == "engine" and tls:
         # Без клиентского сертификата mTLS-мост не ответит — хватает того, что порт слушает.
         port = env.get("CCTV_PORT") or str(settings.DEFAULT_BRIDGE_PORT)
+        # Мост на адресе узла (движок площадки) на loopback не отвечает — стучимся туда, где слушает.
+        bind = env.get("CCTV_BIND") or ""
+        host = "127.0.0.1" if bind in ("", "0.0.0.0", "::") else bind
         try:
-            socket.create_connection(("127.0.0.1", int(port)), timeout=5).close()
+            socket.create_connection((host, int(port)), timeout=5).close()
         except OSError as exc:
             print(i18n.t("supervisor.bridge_tls_down", lang, port=port, reason=exc))
             return 1

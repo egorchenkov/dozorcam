@@ -169,7 +169,7 @@ not override what the active node handed out. Only node-local keys keep the node
 value:
 
 - node name and paths inside the container: `CCTV_NODE`, `CCTV_CONFIG_DIR`, `CCTV_STATE_DIR`, `CCTV_BUFFER_DIR`, `CCTV_STORAGE_ROOT`, `CCTV_RUNTIME_DIR`, `CCTV_SUPERVISOR_STATUS`, `CCTV_CAMERA_CONFIG`, `CCTV_PROXY_CAMERA_CONFIG`, `CCTV_RUNTIME_CAMERA_CONFIG`, `CCTV_REGISTRY_FILE`, `CCTV_REGISTRY_SEED`, `CCTV_PROVISION_SOCKET`, `CCTV_PROVISION_BACKUPS`, `CCTV_PROVISION_UNITS`, `CCTV_RETENTION_GUARD`, `CCTV_MODEL_DIRS`, `CCTV_NOTIFY_STATE`
-- addresses and ports of this machine: `CCTV_BIND`, `CCTV_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`
+- addresses and ports of this machine: `CCTV_BIND`, `CCTV_PORT`, `CCTV_BRIDGE_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`
 - its own engine↔bot certificates: `CCTV_BRIDGE_CA`, `CCTV_BRIDGE_CLIENT_CERT`, `CCTV_BRIDGE_CLIENT_KEY`, `CCTV_CLIENT_CA`, `CCTV_SERVER_CERT`, `CCTV_SERVER_KEY`, `CCTV_EVENTS_CA`, `CCTV_EVENTS_CERT`, `CCTV_EVENTS_CLIENT_CA`, `CCTV_EVENTS_KEY`, `CCTV_BRIDGE_USER`, `CCTV_BRIDGE_GROUP`
 - its network and Bot API server: `CCTV_DISCOVERY_NETWORKS`, `CCTV_TELEGRAM_API`
 - its memory, disk and CPU: `CCTV_BUFFER_MAX_BYTES`, `CCTV_BUFFER_SEGMENTS`, `CCTV_MAX_TOTAL_BYTES`, `CCTV_STORAGE_BUDGET_BYTES`, `CCTV_MIN_FREE_BYTES`, `CCTV_CV_THREADS`, `CCTV_DETECT_NICE`, `CCTV_PERSON_INFER_SLOTS`
@@ -257,6 +257,49 @@ bot_agent = "http://127.0.0.1:8793"
 bridge_url = "http://127.0.0.1:8790"
 events_url = "http://127.0.0.1:8791/v1/events"
 ```
+
+## Live run on two machines
+
+The order in which the layer is checked on real machines before a release, or after a new
+install, with real cameras and a real Telegram group. Mark the messages of the run as a test
+in the group. Write down what you saw (digests, hashes, counts) — that record is the proof.
+
+1. **Lay out the nodes.** Two machines with Docker (different architectures are fine — the
+   image is multi-arch). On both: the same `compose.yml`, the same image pinned to a tag or a
+   digest (`CCTV_IMAGE_TAG`), the same configuration directory (`config.toml` with
+   `[failover]`, every node's `address`, `bridge_url` and `events_url`, `internal_tls = true`,
+   the `tls_*` files from one CA; `secrets.toml`; `cameras.json`). The `.env` files differ by
+   one line, `CCTV_NODE`. `docker compose up -d` on both. The node with priority 1 takes both
+   roles at the first start, the other one reports `armed` in its healthcheck.
+2. **Prove they are the same.** On both nodes compare `sha256sum` of `compose.yml` and of
+   every file in the configuration directory, and `docker inspect --format '{{index
+   .RepoDigests 0}}'` of every container — one digest on both machines. `diff` the two
+   `.env`: only `CCTV_NODE` may differ.
+3. **Who holds the cameras.** On each node count the established TCP sessions to the cameras'
+   RTSP port: `ss -Htn state established '( dport = :554 )'`. Only the node that holds the
+   engine role has them; the armed node has none and never opens any — a bare TCP connect for
+   the fitness check does not stay established.
+4. **Move the engine.** `/nodes` → "engine → node" → confirm. Recording pauses for about a
+   minute. Then repeat step 3: the sessions are on the new node and gone from the old one;
+   `/nodes` shows the new holder; a frame from a camera's topic comes from the new node's
+   bridge. Move it back the same way and check again.
+5. **Move the bot.** `/nodes` → "bot → node" → confirm. The bot is silent for a few seconds and
+   answers from the new node. Send `/nodes` there: exactly one answer. Every message of the run
+   has exactly one copy in the group — count them, a second poller would show up as a double.
+   Move it back and count again.
+6. **A change reaches the spare node.** Edit `config.toml` in the configuration directory of
+   the node that holds the engine role (a harmless key, for example `check_sec`). Within a few
+   seconds the copy on the armed node has it:
+   `docker compose exec engine cat /var/lib/cctv/state/failover-config/config.toml`.
+   Edit it back and check again; an edit on the armed node must not be handed out (the log
+   says so).
+7. **A second site**, if there is one: its engine runs outside the layer with both receivers
+   in `events_url`. After the bot moves (step 5), the second site's events still arrive and
+   its cameras keep their sessions on their own engine the whole time.
+
+What is a defect: two nodes with sessions to one camera at any moment, a doubled message in the
+group, a healthcheck that is red on either node, a change that did not reach the spare node,
+a role that did not return to the previous node.
 
 ## How it is checked
 

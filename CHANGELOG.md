@@ -5,6 +5,31 @@ Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-11-04
+
+Failover across machines: the defects found by the first live run of steps 1–3 on two real
+nodes (arm64 and amd64), and the order of such a run in the docs.
+
+### Fixed
+- With `[failover]` across machines the bot did not start under mutual TLS: the supervisor
+  checked the configuration against the plain-http bridge address from `compose.yml` instead
+  of the https `bridge_url` of the node that holds the engine, which the layer sets.
+- Media links in events pointed at the engine's bind address (`0.0.0.0`), so the bot rejected
+  a frame that came from the bridge of another node. The layer now gives the engine
+  `CCTV_PUBLIC_URL` = the node's own `bridge_url`.
+- `compose.yml` no longer pins `CCTV_EVENTS_URL` and `CCTV_BRIDGE_URL` to loopback: an engine
+  of another site, outside the layer, sent its events to loopback past `[engine] events_url`.
+  `CCTV_EVENTS_URL`/`CCTV_BRIDGE_URL` from `.env` are passed through as they are; without them
+  the defaults are built from `CCTV_EVENTS_PORT`/`CCTV_BRIDGE_PORT`. `CCTV_BRIDGE_PORT` is a
+  node-local key.
+- The bridge healthcheck probes the address the bridge listens on (`CCTV_BIND`), not
+  `127.0.0.1`.
+
+### Added
+- [docs/failover.md](docs/failover.md#live-run-on-two-machines): the order of a live run on
+  two machines — same images and configuration, who holds the cameras, moving the engine and
+  the bot there and back, a change reaching the spare node, a second site.
+
 ## [0.6.0] — 2026-11-04
 
 Failover, step 3 of 5: sites — several engines behind one bot, each with its own cameras,
