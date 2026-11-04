@@ -5,6 +5,36 @@ Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-11-04
+
+Failover, step 5 of 5: automatic takeover by priority — off by default, three nodes or more.
+
+### Added
+- `[failover] auto = true` (with `heartbeat_sec`, default 5, and `dead_after_sec`, default 30):
+  the agents of a role exchange heartbeats; a holder that does not hear a quorum (a majority
+  of the nodes) for half of `dead_after_sec` freezes the role by itself; when the holder has
+  been silent for `dead_after_sec` and the nodes that hear each other are a quorum, the next
+  fit node by priority takes the role in a new epoch. No quorum — no takeover; the role does
+  not come back by itself. `auto` needs at least three nodes. See
+  [docs/failover.md](docs/failover.md#automatic-takeover-by-priority).
+- While it runs, the holder hands the armed nodes a copy of its state every `check_sec`
+  (SQLite databases through the backup API), so a node that takes over a dead holder starts
+  on the last copy.
+- With `auto` the bot exits at once on a Telegram poll conflict (409) — without another
+  `getUpdates` — and polls again only if the quorum confirms its node holds the role, so a
+  stale bot process never interrupts the new one (`CCTV_POLL_CONFLICT`, a node-local key set
+  by the layer).
+- `/nodes` says whether automatic switching is on and with what quorum, shows a frozen
+  holder as "holds the role but waits", and an automatic switch as "Last switch …,
+  automatic".
+- [docs/failover.md](docs/failover.md#live-run-of-automatic-takeover): how to turn it on and
+  the order of a live run on three nodes (a stopped holder, a frozen holder, the old holder
+  coming back, no quorum), with the results of the first run.
+
+### Fixed
+- A holder that froze its role without a quorum logged itself as the node holding the role it
+  was "armed" for; it now logs that it holds the role but waits for a quorum.
+
 ## [0.6.1] — 2026-11-04
 
 Failover across machines: the defects found by the first live run of steps 1–3 on two real

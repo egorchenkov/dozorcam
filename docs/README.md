@@ -8,7 +8,7 @@ Start with the [README](../README.md) · Начните с [README](../README.ru
 | Reference: delivery modes, camera map and card, commands, people, cameras, detector, configuration, network, TLS, layout, development | [reference.md](reference.md) | [reference.ru.md](reference.ru.md) |
 | Hardware sizing: per-camera numbers, how they were measured, what will not run | [sizing.md](sizing.md) | [sizing.ru.md](sizing.ru.md) |
 | Cameras: RTSP paths by brand, checked cameras | [cameras.md](cameras.md) | [cameras.ru.md](cameras.ru.md) |
-| Failover: nodes, armed mode, switching roles from the bot (step 1 of 5) | [failover.md](failover.md) | [failover.ru.md](failover.ru.md) |
+| Failover: nodes, armed mode, switching roles from the bot, sites, automatic takeover by priority | [failover.md](failover.md) | [failover.ru.md](failover.ru.md) |
 | Person detector models, thresholds, your own weights, bench | [models.md](models.md) | — |
 | Changelog | [CHANGELOG.md](../CHANGELOG.md) | [CHANGELOG.ru.md](../CHANGELOG.ru.md) (с 0.3.1) |
 | Website (en, ru) with the hardware calculator | [egorchenkov.github.io/dozorcam](https://egorchenkov.github.io/dozorcam/) | [egorchenkov.github.io/dozorcam/ru](https://egorchenkov.github.io/dozorcam/ru/) |

@@ -159,6 +159,10 @@ class Config:
     # установки несколько узлов; пусто — узел один, панели нет.
     nodes_url: str = ""
     nodes_token: str = ""
+    # Опрос перехватил другой процесс этого бота (Telegram ответил конфликтом): exit —
+    # выйти с кодом 75 и отдать опрос ему (так просит супервизор при автопереключении);
+    # пусто — повторять опрос, как прежде.
+    poll_conflict_exit: bool = False
     # Площадки (CCTV_SITES): у каждой свой мост; пусто — одна, мост bridge_base_url.
     sites: tuple[Site, ...] = ()
 
@@ -251,5 +255,6 @@ def load(env: dict[str, str] | None = None) -> Config:
         update_url=(env.get("CCTV_UPDATE_URL") or "").strip(),
         nodes_url=(env.get("CCTV_NODES_URL") or "").strip(),
         nodes_token=(env.get("CCTV_NODES_TOKEN") or "").strip(),
+        poll_conflict_exit=(env.get("CCTV_POLL_CONFLICT") or "").strip().lower() == "exit",
         sites=_sites(env.get("CCTV_SITES") or "", tls, base_url),
     )

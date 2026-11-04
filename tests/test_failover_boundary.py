@@ -32,11 +32,14 @@ LAYER = PACKAGE / "failover"
 SUPERVISOR = PACKAGE / "container.py"
 
 # Что супервизор берёт у агента слоя. active/report/wait — «включись/замри»;
+# conflict — «процесс роли отдал опрос Telegram другому» (тоже «замри», auto.py);
 # holder/cfg — для журнала и статуса; wiring/panel_env — окружение процессов роли;
 # stop — остановка самого агента.
-SUPERVISOR_USES = {"active", "report", "wait", "holder", "cfg", "wiring", "panel_env", "stop"}
-# Что слой кладёт в окружение процессов роли (CCTV_PUBLIC_URL — адрес своего моста для ссылок на медиа).
-CHILD_ENV = {"CCTV_BRIDGE_URL", "CCTV_EVENTS_URL", "CCTV_PUBLIC_URL", "CCTV_NODES_URL", "CCTV_NODES_TOKEN"}
+SUPERVISOR_USES = {"active", "report", "wait", "conflict", "holder", "cfg", "wiring", "panel_env", "stop"}
+# Что слой кладёт в окружение процессов роли (CCTV_PUBLIC_URL — адрес своего моста для ссылок на медиа;
+# CCTV_POLL_CONFLICT — боту при автопереключении: на конфликт опроса выйти, а не бороться).
+CHILD_ENV = {"CCTV_BRIDGE_URL", "CCTV_EVENTS_URL", "CCTV_PUBLIC_URL", "CCTV_NODES_URL", "CCTV_NODES_TOKEN",
+             "CCTV_POLL_CONFLICT"}
 
 
 def imports_of(path: pathlib.Path) -> set[str]:

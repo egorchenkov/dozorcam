@@ -50,8 +50,14 @@ class FakeTelegram:
     """
 
     HOLD_SEC = 0.3
+    CONFLICT = object()
 
-    def __init__(self) -> None:
+    def __init__(self, conflicts: bool = False) -> None:
+        # conflicts — как настоящий Telegram: новый getUpdates перебивает long poll другого
+        # процесса того же бота, и перебитый опрос получает 409 Conflict.
+        self.conflicts = conflicts
+        self.conflicted: list[str] = []
+        self.terminate: dict[str, threading.Event] = {}
         self.lock = threading.Lock()
         self.queue: list[dict] = []
         self.next_update = 1000
@@ -96,7 +102,19 @@ class FakeTelegram:
                     self.end_headers()
                     return
                 node, method, params = parts[0], parts[2], self.params()
-                self.reply(fake.handle(node, method, params))
+                result = fake.handle(node, method, params)
+                if result is fake.CONFLICT:
+                    body = json.dumps({"ok": False, "error_code": 409, "description":
+                                       "Conflict: terminated by other getUpdates request; "
+                                       "make sure that only one bot instance is running"}).encode()
+                    self.send_response(409)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    with contextlib.suppress(OSError):
+                        self.wfile.write(body)
+                    return
+                self.reply(result)
 
             do_GET = do_POST = handle_any
 
@@ -148,11 +166,20 @@ class FakeTelegram:
                 if other != node and count:
                     self.overlaps.append((node, other))
             self.inflight[node] = self.inflight.get(node, 0) + 1
+            if self.conflicts:
+                for other, event in self.terminate.items():
+                    if other != node:
+                        event.set()
+            terminated = self.terminate[node] = threading.Event()
             # Подтверждённые offset'ом апдейты Telegram больше не отдаёт никому.
             self.queue = [item for item in self.queue if item["update_id"] >= offset]
         try:
             deadline = start + self.HOLD_SEC
             while time.monotonic() < deadline:
+                if terminated.is_set():
+                    with self.lock:
+                        self.conflicted.append(node)
+                    return self.CONFLICT
                 with self.lock:
                     if self.queue:
                         return list(self.queue)
@@ -160,6 +187,8 @@ class FakeTelegram:
             return []
         finally:
             with self.lock:
+                if self.terminate.get(node) is terminated:
+                    del self.terminate[node]
                 self.inflight[node] -= 1
                 self.polls.append((node, start, time.monotonic()))
 

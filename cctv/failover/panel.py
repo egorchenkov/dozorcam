@@ -39,7 +39,9 @@ def _role_line(lang: str, agent, node: str, role: str, status: dict | None) -> s
     if status is None:
         return _t(lang, "nodes.line_down", role=label)
     holder = agent.holder(role)
-    if node == holder:
+    if node == holder and status.get("fenced"):
+        state = _t(lang, "nodes.state.fenced")
+    elif node == holder:
         state = _t(lang, "nodes.state.active" if status.get("running") else "nodes.state.starting")
     else:
         state = _t(lang, "nodes.state.armed")
@@ -53,6 +55,8 @@ def _role_line(lang: str, agent, node: str, role: str, status: dict | None) -> s
 
 def _outcome(lang: str, last: dict) -> str:
     role = _t(lang, f"nodes.role.{last.get('role')}")
+    if last.get("ok") and last.get("auto"):
+        return _t(lang, "nodes.last_auto", role=role, source=last.get("from", "?"), target=last.get("to", "?"))
     if last.get("ok"):
         return _t(lang, "nodes.last_ok", role=role, source=last.get("from", "?"), target=last.get("to", "?"))
     code = str(last.get("error") or "")
@@ -76,7 +80,12 @@ def view(agent, lang: str | None, *, statuses=None) -> dict:
     lang = i18n.resolve(lang)
     found = agent.statuses() if statuses is None else statuses
     cfg = agent.cfg
-    lines = [_t(lang, "nodes.title"), _t(lang, "nodes.check_every", sec=cfg.check_sec), ""]
+    lines = [_t(lang, "nodes.title"), _t(lang, "nodes.check_every", sec=cfg.check_sec)]
+    if cfg.auto:
+        lines.append(_t(lang, "nodes.auto_on", sec=cfg.dead_after_sec, quorum=cfg.quorum, total=len(cfg.nodes)))
+    else:
+        lines.append(_t(lang, "nodes.auto_off"))
+    lines.append("")
     for node in cfg.ordered:
         head = _t(lang, "nodes.node", name=node.name, priority=node.priority)
         if node.name == cfg.me:
@@ -87,8 +96,18 @@ def view(agent, lang: str | None, *, statuses=None) -> dict:
         switching = agent.switching
         lines += ["", _t(lang, "nodes.switching", role=_t(lang, f"nodes.role.{switching['role']}"),
                          source=switching["from"], target=switching["to"])]
-    elif agent.last_switch:
-        lines += ["", _outcome(lang, _last(agent, agent.last_switch))]
+    else:
+        outcomes = [_outcome(lang, _last(agent, agent.last_switch))] if agent.last_switch else []
+        # Роль забрал другой узел сам (держатель замолчал) — итог по назначению.
+        for role in ROLES:
+            with agent.lock:
+                current = dict(agent.assign.get(role) or {})
+            last = agent.last_switch or {}
+            if current.get("auto") and not (last.get("role") == role and last.get("epoch") == current["epoch"]):
+                outcomes.append(_outcome(lang, {"role": role, "ok": True, "auto": True,
+                                                "from": current["prev"], "to": current["holder"]}))
+        if outcomes:
+            lines += ["", *outcomes]
     rows = []
     for role in ROLES:
         holder = agent.holder(role)

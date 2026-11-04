@@ -7,6 +7,9 @@ CCTV_NODE. Раздела нет — слоя нет: роль всегда ак
 
     [failover]
     check_sec = 60                     # проверка пригодности узлов
+    auto = false                       # автопереключение по приоритету (кворум, от трёх узлов)
+    heartbeat_sec = 5                  # сердцебиение агентов роли при auto
+    dead_after_sec = 30                # держатель молчит столько — роль уходит следующему
     [[failover.nodes]]
     name = "dacha"
     priority = 1                       # меньше — главнее; он активен с первого старта
@@ -34,8 +37,13 @@ ROLES = ("engine", "bot")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 AGENT_PORTS = {"engine": 8782, "bot": 8783}
 DEFAULT_CHECK_SEC = 60
+DEFAULT_HEARTBEAT_SEC = 5
+DEFAULT_DEAD_AFTER_SEC = 30
+# Кворум — большинство узлов списка; из двух узлов большинство — оба, и уцелевший
+# не смог бы забрать роль никогда. Поэтому автопереключение — от трёх узлов.
+AUTO_MIN_NODES = 3
 SECRET_MIN_LEN = 16
-SECTION_KEYS = ("nodes", "check_sec", "tls_cert", "tls_key", "tls_ca")
+SECTION_KEYS = ("nodes", "check_sec", "auto", "heartbeat_sec", "dead_after_sec", "tls_cert", "tls_key", "tls_ca")
 NODE_KEYS = ("name", "priority", "address", "engine_agent", "bot_agent", "bridge_url", "events_url")
 SECRET_KEYS = ("secret",)
 
@@ -65,6 +73,9 @@ class Failover:
     nodes: tuple[Node, ...]
     secret: bytes
     check_sec: int = DEFAULT_CHECK_SEC
+    auto: bool = False
+    heartbeat_sec: int = DEFAULT_HEARTBEAT_SEC
+    dead_after_sec: int = DEFAULT_DEAD_AFTER_SEC
     tls_cert: str = ""
     tls_key: str = ""
     tls_ca: str = ""
@@ -88,6 +99,16 @@ class Failover:
     @property
     def tls(self) -> bool:
         return bool(self.tls_cert)
+
+    @property
+    def quorum(self) -> int:
+        """Большинство узлов списка: столько должны видеть друг друга, чтобы роль работала."""
+        return len(self.nodes) // 2 + 1
+
+    @property
+    def fence_sec(self) -> float:
+        """Держатель без кворума столько — замирает сам; вдвое раньше, чем роль заберут."""
+        return self.dead_after_sec / 2
 
 
 def _url(value, key: str, *, need_port: bool) -> str:
@@ -183,6 +204,18 @@ def load(env: MutableMapping[str, str] | None = None) -> Failover | None:
     check_sec = section.get("check_sec", DEFAULT_CHECK_SEC)
     if not isinstance(check_sec, int) or isinstance(check_sec, bool) or not 5 <= check_sec <= 3600:
         raise FailoverError("bad_value", key="failover.check_sec")
+    auto = section.get("auto", False)
+    if not isinstance(auto, bool):
+        raise FailoverError("bad_value", key="failover.auto")
+    heartbeat_sec = section.get("heartbeat_sec", DEFAULT_HEARTBEAT_SEC)
+    if not isinstance(heartbeat_sec, int) or isinstance(heartbeat_sec, bool) or not 1 <= heartbeat_sec <= 60:
+        raise FailoverError("bad_value", key="failover.heartbeat_sec")
+    dead_after_sec = section.get("dead_after_sec", DEFAULT_DEAD_AFTER_SEC)
+    if (not isinstance(dead_after_sec, int) or isinstance(dead_after_sec, bool)
+            or not 4 * heartbeat_sec <= dead_after_sec <= 600):
+        raise FailoverError("dead_after", heartbeat=heartbeat_sec)
+    if auto and len(nodes) < AUTO_MIN_NODES:
+        raise FailoverError("auto_nodes", count=AUTO_MIN_NODES)
 
     secret_section = settings._read_toml(root / settings.SECRETS_FILE).get("failover") or {}
     unknown = sorted(set(secret_section) - set(SECRET_KEYS)) if isinstance(secret_section, dict) else []
@@ -197,4 +230,5 @@ def load(env: MutableMapping[str, str] | None = None) -> Failover | None:
         raise FailoverError("no_node")
     if me not in names:
         raise FailoverError("unknown_node", name=me, names=", ".join(names))
-    return Failover(me=me, nodes=nodes, secret=secret.encode(), check_sec=check_sec, **tls)
+    return Failover(me=me, nodes=nodes, secret=secret.encode(), check_sec=check_sec, auto=auto,
+                    heartbeat_sec=heartbeat_sec, dead_after_sec=dead_after_sec, **tls)

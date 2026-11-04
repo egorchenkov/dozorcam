@@ -21,6 +21,7 @@
 Отказоустойчивость (раздел [failover] конфига, cctv.failover) — слой над
 супервизором, а не внутри движка и бота: агент слоя отвечает «включись или
 замри». Замер — процессы роли остановлены, контейнер жив (state «armed»,
+«fenced» — держатель без кворума или после конфликта опроса Telegram,
 healthcheck зелёный); включился — роль стартует заново, как после рестарта.
 С разделом [failover] роль работает на раздаваемом конфиге (копия в state,
 её ведёт агент), а не на локальном каталоге узла; новая ревизия — как правка
@@ -41,6 +42,7 @@ import urllib.error
 import urllib.request
 
 from . import failover, i18n, settings
+from .failover import auto as failover_auto
 from .failover import probe as failover_probe
 from .failover import share as failover_share
 
@@ -267,7 +269,11 @@ class Supervisor:
         """Узел наготове: процессы роли не запущены, ждём назначения или правки конфига."""
         self.stop_all()
         holder = self.layer.holder()
-        log(f"роль {self.role} наготове: её держит узел {holder}")
+        if holder == self.layer.cfg.me:
+            # Замер (auto): роль за этим узлом, но кворума он не слышит — ждёт кворума или новой эпохи.
+            log(f"роль {self.role} замерла: держит этот узел, но кворума не слышно — жду")
+        else:
+            log(f"роль {self.role} наготове: её держит узел {holder}")
         while (not self.stopping and self.layer is not None and not self.layer.active()
                and self.fingerprint() == fingerprint):
             write_status("armed", holder, role=self.role, node=self.layer.cfg.me, holder=self.layer.holder())
@@ -316,7 +322,10 @@ class Supervisor:
         while not self.stopping:
             if self.layer is not None:
                 if not self.layer.active():
-                    log(f"роль {self.role} передана узлу {self.layer.holder()}: замираю")
+                    if self.layer.holder() == self.layer.cfg.me:
+                        log(f"роль {self.role}: нет кворума узлов или опрос Telegram у другого процесса — замираю")
+                    else:
+                        log(f"роль {self.role} передана узлу {self.layer.holder()}: замираю")
                     return
                 wiring = self.layer.wiring()
                 if wiring != self.wiring:
@@ -328,7 +337,11 @@ class Supervisor:
                             child.stop()
                             child.next_start = 0.0
             for child in self.children:
-                child.reap()
+                if child.reap() == failover_auto.CONFLICT_EXIT and self.layer is not None:
+                    # Бот: Telegram отдал опрос другому процессу — узел отступает (auto.py).
+                    self.layer.conflict()
+            if self.layer is not None and not self.layer.active():
+                continue
             for child in self.children:
                 if not child.alive() and time.monotonic() >= child.next_start:
                     if not self.before_start(child, env):

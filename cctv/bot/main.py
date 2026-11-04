@@ -27,6 +27,8 @@ WATCHDOG_INTERVAL_SEC = 120
 # Проверка новой версии: тик раз в час, сам запрос к GitHub — раз в сутки (updates.py).
 UPDATE_TICK_SEC = 3600
 TG_TIMEOUT_SEC = 20
+# Выход «опрос Telegram перехватил другой процесс этого бота» (EX_TEMPFAIL).
+POLL_CONFLICT_EXIT = 75
 
 log = logging.getLogger("cctv-tg-bot")
 
@@ -154,7 +156,8 @@ async def _amain() -> int:
             # my_chat_member нужен мастеру: «бота добавили в группу / сделали админом».
             await application.updater.start_polling(
                 drop_pending_updates=True,
-                allowed_updates=["message", "callback_query", "my_chat_member"])
+                allowed_updates=["message", "callback_query", "my_chat_member"],
+                error_callback=poll_error_callback(cfg))
             await asyncio.Event().wait()
     finally:
         chores.cancel()
@@ -167,6 +170,32 @@ async def _amain() -> int:
         bridge.close()
         state.close()
     return 0
+
+
+def poll_error_callback(cfg, exit=None):
+    """Ошибки опроса Telegram. С CCTV_POLL_CONFLICT=exit конфликт (опрос перехватил
+    другой процесс того же бота) — немедленный выход с POLL_CONFLICT_EXIT: без
+    повторного getUpdates и без прощального getUpdates библиотеки, который сам
+    перебил бы опрос того процесса. Без него — как прежде (None: библиотека пишет
+    ошибку в журнал и повторяет опрос)."""
+    if not cfg.poll_conflict_exit:
+        return None
+    import os
+
+    from telegram.error import Conflict
+
+    leave = exit or os._exit
+
+    def callback(exc) -> None:
+        if isinstance(exc, Conflict):
+            log.warning("Telegram: опрос этого бота перехватил другой процесс — отступаю")
+            for handler in logging.getLogger().handlers:
+                handler.flush()
+            leave(POLL_CONFLICT_EXIT)
+            return
+        log.error("опрос Telegram: %s: %s", type(exc).__name__, exc)
+
+    return callback
 
 
 def register_handlers(application, core, state, panel: NodesPanel | None = None) -> None:

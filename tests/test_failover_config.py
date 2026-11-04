@@ -246,8 +246,10 @@ class ConfigDistributionTest(unittest.TestCase):
         time.sleep(0.5)
         edited = current["config.toml"].replace("[bot]\n", "[bot]\nevent_merge_sec = 30\n", 1)
         (self.cfg["b"] / "config.toml").write_text(edited)
-        self.wait_for(lambda: self.store("a", "engine").files()["config.toml"] == edited
-                      and self.store("a", "bot").files()["config.toml"] == edited, what="правка с b на a")
+        # Store.save пишет файлы, затем meta.json: ждать обоих, иначе meta читается до записи.
+        self.wait_for(lambda: all(self.store("a", role).files()["config.toml"] == edited
+                                  and self.store("a", role).meta()["origin"] == "b" for role in ("engine", "bot")),
+                      what="правка с b на a")
         self.assertEqual((rev + 1, "b"), (self.store("a", "bot").meta()["rev"], self.store("a", "bot").meta()["origin"]))
         self.assertEqual("30", self.resolved("a", "bot")["CCTV_EVENT_MERGE_SEC"])
         # Ни разу роль движка не работала на двух узлах сразу и бот b не запускался.

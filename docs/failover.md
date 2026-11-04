@@ -4,10 +4,10 @@ Dozorcam can run on several machines at once so that a spare one takes over the 
 the bot. This is a separate layer on top of the container supervisor: the engine and the bot
 themselves know nothing about other nodes. Russian: [failover.ru.md](failover.ru.md).
 
-Status: **step 3 of 5** — standby mode, manual switching from the bot, one configuration
-for all nodes (the active node hands it to the armed ones) and several engines behind one bot
-([sites](#sites-several-engines-behind-one-bot)). Automatic takeover when a node dies comes in
-later steps.
+Status: **step 5 of 5** — standby mode, manual switching from the bot, one configuration
+for all nodes (the active node hands it to the armed ones), several engines behind one bot
+([sites](#sites-several-engines-behind-one-bot)) and
+[automatic takeover by priority](#automatic-takeover-by-priority) — off by default.
 
 ## Node and roles
 
@@ -41,6 +41,9 @@ so every node runs on the same files. The only per-node setting is its name.
 # config.toml
 [failover]
 check_sec = 60                 # fitness check period, 5…3600 s
+# auto = false                 # automatic takeover by priority, three nodes or more
+# heartbeat_sec = 5            # heartbeat between the agents of a role, 1…60 s
+# dead_after_sec = 30          # a silent holder loses the role after this, 4 × heartbeat_sec…600 s
 
 [[failover.nodes]]
 name = "dacha"                 # lowercase latin, digits, dashes, up to 20
@@ -77,6 +80,9 @@ CCTV_NODE=dacha
 |---|---|---|
 | `check_sec` | `[failover]` | fitness check period, default 60 s |
 | `nodes` | `[failover]` | the list of nodes, `[[failover.nodes]]` |
+| `auto` | `[failover]` | automatic takeover by priority, default `false`; needs three nodes or more |
+| `heartbeat_sec` | `[failover]` | heartbeat period with `auto`, default 5 s |
+| `dead_after_sec` | `[failover]` | how long the holder may be silent before the next node takes the role, default 30 s |
 | `tls_cert`, `tls_key`, `tls_ca` | `[failover]` | mutual TLS between agents; all three or none |
 | `name` | node | node name, the same as `CCTV_NODE` of that machine |
 | `priority` | node | lower wins; default — the order in the list |
@@ -122,6 +128,55 @@ node's own files stay where they are: its role assignment (`failover.json`), its
 handed-out configuration (`failover-config/`, it has its own revisions) and the detector's
 daily diagnostics (`diag/`). The configuration and the settings made from the chat are on the
 new node already — the active node handed them out while it was armed.
+
+## Automatic takeover by priority
+
+Off by default: without `auto = true` a role stays on its node until you move it from
+`/nodes`, even when that node is gone. With `auto = true` (three nodes or more) a role leaves a
+node that is silent:
+
+```toml
+[failover]
+auto = true
+heartbeat_sec = 5
+dead_after_sec = 30
+```
+
+- **Heartbeat.** Every `heartbeat_sec` the agents of a role ask each other for their status.
+  Each agent remembers how long ago it heard every node (by its own monotonic clock — the
+  clocks of the machines are never compared) and reports those ages in its status.
+- **Quorum** is a majority of the nodes in the list, counting the node itself: 2 of 3, 3 of 5.
+  With two nodes the majority is both, and the survivor could never take over — that is why
+  `auto` needs three nodes.
+- **The holder works only while it hears a quorum.** If it does not hear one for half of
+  `dead_after_sec`, it freezes the role by itself (`/nodes` shows "holds the role but waits").
+  A holder cut off from the others therefore stops before anyone takes its role.
+- **The next node by priority takes the role** when the holder has been silent for
+  `dead_after_sec` for every node that hears the others, and those nodes are a quorum. There is
+  one candidate: the first fit node by priority among the ones that hear each other, except the
+  holder; the others see the same list and wait. The new assignment is a new epoch, as with the
+  button.
+- **No quorum — no takeover.** Two nodes that hear neither each other nor the third one do not
+  split a role, they wait.
+- **The role does not come back by itself.** A node that returns learns the new epoch and
+  stays armed; move the role back to the main node with the button in `/nodes`.
+- **Telegram is the arbiter for the bot.** Telegram itself does not let two processes of one
+  bot poll `getUpdates`: the poll that was interrupted gets a conflict (409). With `auto` a bot
+  process that gets the conflict exits at once — without another `getUpdates` and without the
+  library's farewell `getUpdates`, either of which would interrupt the other poller. It polls
+  again only if the quorum confirms that its node holds the role (then a stale process
+  interrupted it, and that process's node freezes by itself); otherwise the role on this node
+  freezes.
+
+**What moves.** The holder is not reachable, so its state directory cannot be taken from it
+at the moment of takeover. Instead, while it runs, the holder hands the armed nodes a copy of
+its state every `check_sec` (SQLite databases through the backup API, a consistent copy, not a
+file under write), and an armed node lays out only the files that changed. The new node starts
+on the last copy: what happened after it (a topic created a minute ago) can be lost, and the
+memory of the processes is lost on every switch, as with the button.
+
+`/nodes` says whether automatic switching is on, and after a takeover — "Last switch: bot
+a → b, automatic (a went silent)".
 
 ## One configuration for all nodes
 
@@ -169,7 +224,7 @@ not override what the active node handed out. Only node-local keys keep the node
 value:
 
 - node name and paths inside the container: `CCTV_NODE`, `CCTV_CONFIG_DIR`, `CCTV_STATE_DIR`, `CCTV_BUFFER_DIR`, `CCTV_STORAGE_ROOT`, `CCTV_RUNTIME_DIR`, `CCTV_SUPERVISOR_STATUS`, `CCTV_CAMERA_CONFIG`, `CCTV_PROXY_CAMERA_CONFIG`, `CCTV_RUNTIME_CAMERA_CONFIG`, `CCTV_REGISTRY_FILE`, `CCTV_REGISTRY_SEED`, `CCTV_PROVISION_SOCKET`, `CCTV_PROVISION_BACKUPS`, `CCTV_PROVISION_UNITS`, `CCTV_RETENTION_GUARD`, `CCTV_MODEL_DIRS`, `CCTV_NOTIFY_STATE`
-- addresses and ports of this machine: `CCTV_BIND`, `CCTV_PORT`, `CCTV_BRIDGE_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`
+- addresses and ports of this machine: `CCTV_BIND`, `CCTV_PORT`, `CCTV_BRIDGE_PORT`, `CCTV_PUBLIC_URL`, `CCTV_EVENTS_HOST`, `CCTV_EVENTS_PORT`, `CCTV_EVENTS_URL`, `CCTV_BRIDGE_URL`, `CCTV_RTSP_PROXY_PORT`, `CCTV_NODES_URL`, `CCTV_NODES_TOKEN`, `CCTV_POLL_CONFLICT`
 - its own engine↔bot certificates: `CCTV_BRIDGE_CA`, `CCTV_BRIDGE_CLIENT_CERT`, `CCTV_BRIDGE_CLIENT_KEY`, `CCTV_CLIENT_CA`, `CCTV_SERVER_CERT`, `CCTV_SERVER_KEY`, `CCTV_EVENTS_CA`, `CCTV_EVENTS_CERT`, `CCTV_EVENTS_CLIENT_CA`, `CCTV_EVENTS_KEY`, `CCTV_BRIDGE_USER`, `CCTV_BRIDGE_GROUP`
 - its network and Bot API server: `CCTV_DISCOVERY_NETWORKS`, `CCTV_TELEGRAM_API`
 - its memory, disk and CPU: `CCTV_BUFFER_MAX_BYTES`, `CCTV_BUFFER_SEGMENTS`, `CCTV_MAX_TOTAL_BYTES`, `CCTV_STORAGE_BUDGET_BYTES`, `CCTV_MIN_FREE_BYTES`, `CCTV_CV_THREADS`, `CCTV_DETECT_NICE`, `CCTV_PERSON_INFER_SLOTS`
@@ -301,6 +356,62 @@ What is a defect: two nodes with sessions to one camera at any moment, a doubled
 group, a healthcheck that is red on either node, a change that did not reach the spare node,
 a role that did not return to the previous node.
 
+### Live run of automatic takeover
+
+Three nodes, `auto = true` in the shared `config.toml`, everything else as above. The third
+node may be a second instance on one of the machines (see
+[two instances on one machine](#two-instances-on-one-machine)) — the run stops and freezes
+containers, not machines. For a machine that dies as a whole the third node has to live on a
+machine of its own, otherwise one failure takes two votes of three.
+
+1. **Turn it on.** First move every node to an image with automatic switching (the
+   configuration still without `auto`). Then edit `config.toml` on the node that holds the
+   roles: `auto = true` and the third node in `[[failover.nodes]]`; the armed nodes get the new
+   revision within `check_sec` (their logs name the revision and the node it came from). Copy
+   the same file into the configuration directories of the other nodes, so that they do not
+   differ, and start the third node: it takes the assignments and the configuration revision
+   by itself and stays armed.
+2. **One holder.** `/nodes` says "Automatic switching is on … 2 of 3 nodes". One node holds
+   each role, the two others are armed and name it as the holder; every
+   `check_sec` they log a copy of the holder's state.
+3. **The holder dies.** Stop its containers (`docker compose stop`, or pull the network cable).
+   After `dead_after_sec` the next node by priority logs that the holder has been silent, the
+   quorum (2 of 3) and the new epoch, and takes both roles:
+   its healthcheck says it is active, the camera sessions (step 3 above) are on it and on no
+   other node, the node with priority 3 stays armed. A frame from a camera's topic comes from
+   the new node; `/nodes` answers once, from the new node, with "automatic".
+4. **The old holder comes back.** Start it again. Within seconds it learns the new epoch and
+   stays armed: no camera sessions, no bot process, no `getUpdates`, nothing sent to the
+   group. The roles do not come back by themselves — move them with the buttons and check
+   again.
+5. **The holder hangs.** `docker compose pause` on the holder freezes every process of it
+   (the agent, the bot with its open long poll, the engine with its camera sessions). The next
+   node by priority takes the roles; the takeover is a little slower than after a stop, because
+   the requests to the frozen node wait for their timeout. After `docker compose unpause` the
+   woken node logs at once that it has no quorum and freezes the role, then learns the new
+   epoch and stays armed. No poll conflicts (409) in the logs of any bot: the stale bot process
+   is stopped before it can interrupt the new poller.
+6. **No quorum.** Stop two nodes out of three. The last one does not take any role (and the
+   holder, if it is the one left alone, freezes); start one of them again — the roles go to
+   the first node by priority among the two that are up.
+
+What is a defect, beyond the list above: a role taken earlier than `dead_after_sec`, taken by
+a node other than the next by priority, taken without a quorum; a returned node that starts
+the role or polls Telegram; a log that names the node itself as the holder of a role it has
+frozen.
+
+An automatic switch sends nothing to the group — it shows in `/nodes` ("Last switch …,
+automatic") and in the logs of the nodes.
+
+**The run of 2026-11-04** (0.7.0 code; two machines, arm64 and amd64, the third node as a
+second instance on the amd64 one; a second site outside the layer): a stopped holder was
+replaced after about 34 s, a frozen one after 32–40 s, both times by the next node by priority
+with a quorum of 2 of 3; the returned and the woken nodes stayed armed; the buttons kept
+working with `auto` on. The group got exactly one answer per command, one frame per "Frame",
+one card and one clip per event; zero poll conflicts in the logs of every bot. The run found
+one defect (the woken holder logged itself as the holder of an armed role), fixed in this
+release.
+
 ## How it is checked
 
 - `tests/test_failover_armed.py` — an armed engine starts no processes and sends the camera
@@ -324,6 +435,16 @@ a role that did not return to the previous node.
   receivers in `events_url` delivers to the one that runs when the first is closed. Compatibility: no
   `sites` gives the single bridge client exactly as before, a list of one site behaves the same
   way; invalid lists refuse to start.
+- `tests/test_failover_auto.py` — off by default: without `auto` a silent holder keeps its
+  role, no heartbeat runs and the bot does not exit on a conflict. With `auto`, three real
+  agents: the holder dies — the next node by priority takes the role not earlier than
+  `dead_after_sec`, the third one learns the new epoch, the returned node stays armed; without
+  a quorum nothing moves, the quorum returns — the role moves; a holder cut off from the
+  network freezes before the role moves; a holder frozen in the middle of handing out its state copy does not stall the heartbeat of the others; the new node starts on the holder's copy of the state
+  (an SQLite row that was still in the WAL is there). Three real bot supervisors against a
+  Bot API mock that answers 409 like the real one: the hung holder is replaced, `getUpdates` is
+  polled by one node at a time, the woken node steps back and sends nothing. A sampler checks
+  that a role never runs on two nodes at once.
 - `tests/test_failover_config.py` — two nodes talking mutual TLS, each with its own
   configuration directory (the spare one has only `[failover]` and outdated values): the
   first revision, an edit of the directory on the active node and settings made from the

@@ -15,6 +15,11 @@ state и запускается. Двух активных на роль не б
 
 Конфиг (share.py): держатель роли раздаёт ревизии каталога конфига и настройки
 роли из чата остальным агентам — сразу после правки и сверкой раз в check_sec.
+
+Автопереключение (auto.py, ``auto = true``): агенты роли раз в heartbeat_sec
+слышат друг друга; держатель без кворума замирает сам, молчащего держателя
+сменяет следующий по приоритету узел при кворуме. Держатель раздаёт запасным
+копию своего state раз в check_sec — на ней роль и стартует после отказа.
 """
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import __version__
-from . import handover, panel, share, wire
+from . import auto, handover, panel, share, wire
 from .config import ROLES, Failover
 
 STATE_FILE = "failover.json"
@@ -49,8 +54,10 @@ SWITCH_DELAY_SEC = 3.0
 MAX_BODY = 2 * share.MAX_BYTES + 64 * 1024   # ревизия конфига — в JSON с экранированием
 
 
-def _assignment(holder: str, epoch: int, prev: str = "", carry: bool = False) -> dict:
-    return {"holder": holder, "epoch": int(epoch), "prev": prev or holder, "carry": bool(carry)}
+def _assignment(holder: str, epoch: int, prev: str = "", carry: bool = False, auto: bool = False) -> dict:
+    """Назначение роли; auto — роль забрал узел сам, когда держатель замолчал (auto.py)."""
+    return {"holder": holder, "epoch": int(epoch), "prev": prev or holder, "carry": bool(carry),
+            "auto": bool(auto)}
 
 
 class Agent:
@@ -83,11 +90,45 @@ class Agent:
         self.store = share.Store(self.state_dir)
         self.disk_lock = threading.RLock()
         self.role_sent = ""
+        # Автопереключение: когда (по монотонным часам) слышали агента роли на каждом
+        # узле и его последний статус; отступление после конфликта опроса Telegram.
+        self.started_mono = time.monotonic()
+        self.heard: dict[str, float] = {}
+        self.views: dict[str, dict | None] = {}
+        # Копия state для запасных: держатель собирает её раз в check_sec, запасной
+        # помнит, какую уже разложил у себя.
+        self.snapshot: tuple[str, bytes] | None = None
+        self.snapshot_applied = ""
 
     # --- что видит супервизор: «включись / замри» ------------------------------
     def active(self) -> bool:
         with self.lock:
-            return self.assign[self.role]["holder"] == self.cfg.me
+            if self.assign[self.role]["holder"] != self.cfg.me:
+                return False
+            if not self.cfg.auto:
+                return True
+            # Автопереключение: держатель работает, только пока слышит кворум.
+            return auto.has_quorum(self._ages(), self.cfg.fence_sec, self.cfg.quorum)
+
+    def conflict(self) -> bool:
+        """Супервизор: процесс бота вышел — опрос Telegram перехватил другой процесс.
+
+        True — этот узел держит роль и кворум это подтверждает: перехватил устаревший
+        процесс (его узел сам замрёт), опрос возобновится после паузы перезапуска.
+        False — узел роль не держит или кворума не слышит: роль здесь замирает.
+        """
+        holding = self.active()
+        if holding:
+            self.log(f"отказоустойчивость: опрос Telegram перехватил другой процесс, но роль {self.role} "
+                     "за этим узлом по кворуму — возобновлю опрос после паузы")
+        else:
+            self.log(f"отказоустойчивость: опрос Telegram у другого процесса, а роль {self.role} этому узлу "
+                     "кворумом не подтверждена — замираю")
+        return holding
+
+    def _ages(self) -> dict[str, float]:
+        return auto.ages(self.heard, self.started_mono, time.monotonic(),
+                         [node.name for node in self.cfg.nodes], self.cfg.me)
 
     def holder(self, role: str | None = None) -> str:
         with self.lock:
@@ -130,10 +171,14 @@ class Agent:
 
     def panel_env(self) -> dict[str, str]:
         """Боту — адрес панели узлов и одноразовый (на запуск супервизора) ключ к ней."""
+        result = {}
+        if self.role == "bot" and self.cfg.auto:
+            # Telegram — арбитр: перехватили опрос — процесс бота выходит, а не борется за него.
+            result["CCTV_POLL_CONFLICT"] = "exit"
         if self.panel_server is None:
-            return {}
+            return result
         port = self.panel_server.server_address[1]
-        return {"CCTV_NODES_URL": f"http://127.0.0.1:{port}", "CCTV_NODES_TOKEN": self.panel_token}
+        return {**result, "CCTV_NODES_URL": f"http://127.0.0.1:{port}", "CCTV_NODES_TOKEN": self.panel_token}
 
     # --- жизненный цикл --------------------------------------------------------
     def start(self) -> None:
@@ -143,6 +188,13 @@ class Agent:
         thread = threading.Thread(target=self._loop, name=f"failover-{self.role}", daemon=True)
         thread.start()
         self._threads.append(thread)
+        if self.cfg.auto:
+            # Копия state — своим потоком: её загрузка у замершего держателя длится до
+            # HANDOVER_TIMEOUT_SEC и не должна задерживать сердцебиение (кворум бы «пропал»).
+            for target, name in ((self._beat_loop, "beat"), (self._snapshot_loop, "snapshot")):
+                thread = threading.Thread(target=target, name=f"failover-{name}-{self.role}", daemon=True)
+                thread.start()
+                self._threads.append(thread)
         self.log(f"отказоустойчивость: узел {self.cfg.me}, роль {self.role}, "
                  f"держит {self.holder()} (эпоха {self.assign[self.role]['epoch']})")
 
@@ -179,6 +231,115 @@ class Agent:
             self.health = result
         self.gossip()
 
+    # --- автопереключение (auto.py) --------------------------------------------
+    def _beat_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.beat()
+            except Exception as exc:  # сердцебиение не должно ронять агента
+                self.log(f"отказоустойчивость: сердцебиение: {type(exc).__name__}: {exc}")
+            self._stop.wait(self.cfg.heartbeat_sec)
+
+    def _snapshot_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.snapshot_tick()
+            except Exception as exc:  # копия state не должна ронять агента
+                self.log(f"отказоустойчивость: копия state: {type(exc).__name__}: {exc}")
+            self._stop.wait(self.cfg.check_sec)
+
+    def beat(self) -> None:
+        """Сердцебиение: статусы агентов своей роли, затем решение по держателю."""
+        targets = [(node.name, node.agent(self.role)) for node in self.cfg.ordered]
+
+        def fetch(target):
+            try:
+                return self.call(target[1], "GET", "/v1/status", timeout=min(PEER_TIMEOUT_SEC, self.cfg.heartbeat_sec))
+            except wire.WireError:
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as pool:
+            found = dict(zip((name for name, _ in targets), pool.map(fetch, targets)))
+        for result in found.values():
+            for role in ROLES:
+                item = (result or {}).get("assign", {}).get(role)
+                if isinstance(item, dict):
+                    self.adopt(role, item)
+        self._hear(found)
+        self.auto_step()
+
+    def auto_step(self) -> None:
+        """Забрать роль у молчащего держателя, если кворум согласен и этот узел — следующий."""
+        with self.lock:
+            current = dict(self.assign[self.role])
+            own = self._ages()
+            fresh = set(auto.reachable(own, self.cfg.fence_sec))
+            views = {name: view for name, view in self.views.items() if name in fresh}
+            fit = {name: (view or {}).get("health", {}).get("fit") is not False for name, view in views.items()}
+            fit[self.cfg.me] = self.health.get("fit") is not False
+            elsewhere = any((view or {}).get("running") for name, view in views.items() if name != self.cfg.me)
+        holder, epoch = current["holder"], current["epoch"]
+        if not auto.takeover(self.cfg, holder, own, views, fit, elsewhere):
+            return
+        item = _assignment(self.cfg.me, epoch + 1, holder, carry=False, auto=True)
+        with self.changed:
+            if self.assign[self.role] != current:
+                return   # назначение сменилось, пока решали
+            self.assign[self.role] = item
+            self._save()
+            self.changed.notify_all()
+            self.last_switch = {"role": self.role, "to": self.cfg.me, "from": holder, "at": self.clock(),
+                                "epoch": epoch + 1, "ok": True, "auto": True}
+        self.log(f"отказоустойчивость: держатель роли {self.role} {holder} молчит "
+                 f"{own.get(holder, 0):.0f} с, кворум {len(fresh)} из {len(self.cfg.nodes)} — роль забирает "
+                 f"этот узел (эпоха {epoch + 1})")
+        # Рассылка — своим потоком: ответа замершего прежнего держателя ждать до
+        # PEER_TIMEOUT_SEC, а сердцебиение за это время не должно «потерять» кворум.
+        threading.Thread(target=self._broadcast, args=({"role": self.role, **item}, {self.own_url()}),
+                         name=f"failover-assign-{self.role}", daemon=True).start()
+
+    def snapshot_tick(self) -> None:
+        """Копия state роли: держатель собирает её, запасной забирает новую себе."""
+        if self.active() and self.running:
+            try:
+                data, sha = handover.snapshot(self.state_dir)
+            except handover.HandoverError as exc:
+                self.log(f"отказоустойчивость: копия state роли {self.role} не собрана ({exc})")
+                return
+            with self.lock:
+                self.snapshot = (sha, data)
+            return
+        holder = self.holder()
+        with self.lock:
+            view = self.views.get(holder) if holder != self.cfg.me else None
+            fresh = holder in auto.reachable(self._ages(), self.cfg.fence_sec)
+        sha = (view or {}).get("snapshot") or ""
+        if not fresh or not sha or sha == self.snapshot_applied:
+            return
+        node = self.cfg.node(holder)
+        try:
+            data = self.client.call(node.agent(self.role), "GET", f"/v1/snapshot?role={self.role}",
+                                    timeout=HANDOVER_TIMEOUT_SEC, raw=True)
+        except wire.WireError:
+            return   # следующая попытка через check_sec
+        with self.disk_lock:
+            if self.running or self.holder() == self.cfg.me:
+                return
+            try:
+                changed = handover.apply(data, self.state_dir)
+            except handover.HandoverError as exc:
+                self.log(f"отказоустойчивость: копия state роли {self.role} с узла {holder} не разобрана ({exc})")
+                return
+        self.snapshot_applied = sha
+        if changed:
+            self.log(f"отказоустойчивость: копия state роли {self.role} с узла {holder} (файлов изменилось {changed})")
+
+    def snapshot_data(self, role: str) -> bytes | None:
+        with self.lock:
+            if role != self.role or self.snapshot is None or not self.running:
+                return None
+            return self.snapshot[1]
+
     # --- назначения ------------------------------------------------------------
     def _load(self) -> dict:
         top = self.cfg.top
@@ -192,7 +353,7 @@ class Agent:
             if (isinstance(item, dict) and self.cfg.node(str(item.get("holder"))) is not None
                     and isinstance(item.get("epoch"), int)):
                 result[role] = _assignment(item["holder"], item["epoch"], str(item.get("prev") or ""),
-                                           bool(item.get("carry")))
+                                           bool(item.get("carry")), bool(item.get("auto")))
         return result
 
     def _save(self) -> None:
@@ -213,7 +374,7 @@ class Agent:
         """Принять назначение, если оно новее своего. True — назначение сменилось."""
         try:
             item = _assignment(str(item["holder"]), int(item["epoch"]), str(item.get("prev") or ""),
-                               bool(item.get("carry")))
+                               bool(item.get("carry")), bool(item.get("auto")))
         except (KeyError, TypeError, ValueError):
             return False
         if role not in ROLES or self.cfg.node(item["holder"]) is None:
@@ -313,6 +474,15 @@ class Agent:
                     self.peers_seen[f"{node}/{role}"] = {"at": now}
         return found
 
+    def _hear(self, found: dict[str, dict | None]) -> None:
+        """Ответившие агенты своей роли — услышаны сейчас (сердцебиение и сверка)."""
+        now = time.monotonic()
+        with self.lock:
+            for node, result in found.items():
+                if result is not None and node != self.cfg.me:
+                    self.heard[node] = now
+                    self.views[node] = result
+
     def gossip(self, timeout: float = PEER_TIMEOUT_SEC) -> dict:
         found = self.statuses(timeout)
         for result in found.values():
@@ -320,6 +490,8 @@ class Agent:
                 item = (result or {}).get("assign", {}).get(role)
                 if isinstance(item, dict):
                     self.adopt(role, item)
+        # Сначала назначения, потом «услышан»: кворум не должен вернуться раньше новой эпохи.
+        self._hear({node: result for (node, role), result in found.items() if role == self.role})
         try:
             self.catch_up(found, timeout)
         except Exception as exc:  # сверка не должна ронять агента
@@ -469,6 +641,10 @@ class Agent:
                     "assign": json.loads(json.dumps(self.assign)), "running": self.running,
                     "active": self.assign[self.role]["holder"] == self.cfg.me,
                     "health": dict(self.health), "now": self.clock(), "config": self.store.meta(),
+                    "auto": self.cfg.auto, "heard": self._ages() if self.cfg.auto else {},
+                    "fenced": (self.cfg.auto and self.assign[self.role]["holder"] == self.cfg.me
+                               and not self.active()),
+                    "snapshot": self.snapshot[0] if self.snapshot and self.running else "",
                     "role_state": (share.role_state(self.state_dir, self.role)["sha"]
                                    if share.ROLE_FILES.get(self.role) else "")}
 
@@ -669,6 +845,11 @@ def _peer_handler(agent: Agent):
                 return self.send(200, data, "application/gzip")
             if path == "/v1/config":
                 return self.send(200, agent.store.bundle())
+            if path == "/v1/snapshot":
+                data = agent.snapshot_data(dict(urllib.parse.parse_qsl(query)).get("role", ""))
+                if data is None:
+                    return self.send(409, {"ok": False, "error": "no_snapshot"})
+                return self.send(200, data, "application/gzip")
             if path == "/v1/role-state":
                 payload = agent.role_state_data(dict(urllib.parse.parse_qsl(query)).get("role", ""))
                 if payload is None:
