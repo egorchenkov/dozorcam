@@ -3,7 +3,60 @@
 Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии: [SemVer](https://semver.org/lang/ru/).
 По-русски — с 0.3.1; прежние версии — в [CHANGELOG.md](CHANGELOG.md) (английский).
 
-## [Unreleased]
+## [0.8.0] — 2026-11-05
+
+### Добавлено
+
+- Ускорители детектора: на чём работает детектор людей (CPU, NPU Rockchip, OpenVINO, CUDA,
+  Hailo), самопроверка и откат, конвертация `.rknn` и сайзинг CPU/NPU на одной странице —
+  [docs/accelerators.ru.md](docs/accelerators.ru.md), на английском [docs/accelerators.md](docs/accelerators.md).
+- Бэкенды детектора людей: `[engine] person_backend` = `auto` (по умолчанию, ниже), `cpu`,
+  `onnxruntime` (CPU-эталон: тот же файл модели, быстрее) или `cv2` (как в 0.7 и раньше; его
+  берут `cpu` и `auto`, если пакета `onnxruntime` нет), `person_threads` — потоки одного вывода, по умолчанию все ядра,
+  доступные контейнеру, но не больше четырёх. Рамки, уверенность и пороги на обоих бэкендах
+  одинаковы: на 115 кадрах с людьми fp32-графы совпали с `cv2` до 1e-4, fp16-граф на arm64
+  расходится до 0.02 ([docs/models.md](docs/models.md#backends-what-runs-the-model)).
+- Граф по умолчанию для CPU на всех архитектурах — fp32; замеры мс на кадр у `cv2` и
+  `onnxruntime` на графах fp16/fp32/int8 для x86, Neoverse-N1 и Cortex-A72
+  (`bench/backends-matrix.sh`; на A72 fp16 не быстрее fp32); int8 на CPU не используется — он
+  теряет людей. Если onnxruntime открывает fp16-граф, журнал движка один раз говорит об этом
+  и даёт команду конвертации. `scripts/models/convert.py` делает из графа YOLOv5 варианты fp32
+  и int8 ([docs/models.md](docs/models.md#graph-precision-fp32-for-the-cpu)).
+- `scripts/models/rknn-convert.sh`: ONNX YOLOv5 → INT8 `.rknn` под RK3576, RK3588, RK3568 и RK3566
+  в контейнере с закреплённым `rknn-toolkit2` 2.5.0, калибровка на кадрах своих камер
+  ([docs/models.md](docs/models.md#converting-for-the-rockchip-npu)).
+- `person_backend = "rknn"` (экспериментально): YOLOv5 на NPU Rockchip (RK3576, RK3588,
+  RK3568/RK3566) через C API `librknnrt`, модель из `rknn-convert.sh`. На RK3576 — 50 мс на кадр против 265 мс на его CPU; INT8 занижает уверенность в среднем на
+  0.02 (при 0.35 найдено 82 человека из 85). Порог камеры свой у бэкенда: найденный или
+  заданный на CPU не действует на `rknn` и наоборот, а после смены бэкенда откалиброванная
+  камера калибруется заново сама, а до конца калибровки держит прежний автоматический порог
+  ([docs/models.md](docs/models.md#rockchip-npu-rknn-experimental)).
+- `person_backend = "auto"` (по умолчанию): при старте движок ищет ускоритель (пока — NPU
+  Rockchip), прогоняет самопроверку — те же пробные кадры через ускоритель и через CPU-эталон,
+  уверенность и рамки должны совпасть с допуском — и включает ускоритель, только если она
+  пройдена. Всё прочее (устройство NPU не проброшено в контейнер, нет библиотеки рантайма,
+  нет `.rknn` рядом с моделью, сбой прогона или расхождение) — тихий откат на `onnxruntime`
+  на CPU: одна строка `person_backend_selected … reason=…` в журнале движка и строка в `/model`
+  бота. Без ускорителя (x86, ВМ, ARM без NPU) `/model` пишет «Ускорителя нет, CPU». Явный
+  `rknn` проходит ту же самопроверку и так же откатывается.
+- В образе arm64 — рантайм NPU Rockchip `librknnrt` 2.5.0 (лицензия RKNN SDK, см.
+  `THIRD_PARTY.md`), в amd64 его нет. `compose.yml` передаёт движку узлы NPU и их группы только
+  там, где они есть: обёртка `dozorcam` находит их на хосте сама (вручную —
+  `CCTV_NPU_CARD`/`CCTV_NPU_RENDER` в `.env`); без NPU движок стартует как раньше.
+- Другие ускорители детектора по тому же контракту бэкенда (самопроверка против CPU-эталона,
+  тихий откат на `onnxruntime`; `auto` пробует `rknn`, затем `cuda`, `openvino`, `hailo`):
+  `person_backend = "openvino"` — Intel CPU/iGPU/NPU через OpenVINO на том же ONNX-файле,
+  устройство из `CCTV_OPENVINO_DEVICE` (по умолчанию `AUTO`); проверен на CPU против эталона,
+  iGPU и NPU находятся, но на железе ещё не проверены; в `auto` OpenVINO берётся только при
+  iGPU или NPU Intel. `cuda` (onnxruntime TensorRT/CUDA, NVIDIA и Jetson, нужен
+  `onnxruntime-gpu`) и `hailo` (Hailo-8/8L через HailoRT, `<модель>.hef` рядом с ONNX) —
+  экспериментальные, на железе не проверены. Coral EdgeTPU, AMD iGPU, AMD XDNA и Apple CoreML
+  не поддерживаются.
+- OpenVINO нет в базовом образе: `docker build --target openvino` добавляет слой с `openvino`
+  2026.4.1 (`requirements-openvino.txt`, без телеметрии); базовый образ не меняется.
+  `compose.yml` передаёт движку `/dev/dri` и группу render-узла Intel `i915`/`xe` только там,
+  где он есть (обёртка `dozorcam` находит его сама, вручную — `CCTV_INTEL_DRI`/
+  `CCTV_INTEL_RENDER_GID` в `.env`); без iGPU движок стартует как раньше.
 
 ## [0.7.3] — 2026-11-04
 

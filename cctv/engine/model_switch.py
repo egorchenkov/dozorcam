@@ -31,7 +31,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 
-from . import person_models
+from . import person_accel, person_backends, person_models
 from .person_models import FAMILIES, DetectorSettings
 
 CHOICE_NAME = "person_model.json"
@@ -59,13 +59,44 @@ def _write(path: pathlib.Path, value: dict) -> None:
     tmp.replace(path)
 
 
+# Бэкенды, у которых уверенность того же графа другая: INT8 на NPU в среднем на 0.02
+# ниже CPU fp32 и разбегается по кадрам (docs/models.md). Порог, найденный или
+# заданный на CPU, к ним не переносится и наоборот. cv2 и onnxruntime на одном
+# графе дают те же оценки — порог у них общий.
+QUANTIZED_BACKENDS = ("rknn",)
+
+
+def _backend(settings: DetectorSettings | None = None) -> tuple[str, dict | None]:
+    """Бэкенд модели и статус выбора ускорителя. Выбор делает конвейер при сборке
+    детектора (person_accel); до него (мост, старт) — CPU-эталон для ``auto``."""
+    try:
+        configured = person_backends.configured()
+    except ValueError:  # неверная настройка: детектор не запустится, порог не нужен
+        return "", None
+    choice = person_accel.peek(settings.model, settings.family, configured) if settings is not None else None
+    if choice is not None:
+        return choice.backend.name, choice.status()
+    if configured.name in ("auto", *person_backends.ACCELERATED):
+        return person_backends.cpu_backend(), None
+    return configured.name, None
+
+
+def score_key(family: str, model: str | None, backend: str | None) -> str:
+    """Ключ порога камеры: модель, а для квантованного бэкенда ещё и бэкенд."""
+    return f"{family}/{model}" + (f"@{backend}" if backend in QUANTIZED_BACKENDS else "")
+
+
 def describe(settings: DetectorSettings) -> dict:
-    return {"family": settings.family, "model": settings.model.name,
-            "confidence": round(settings.confidence, 2), "reason": settings.reason}
+    backend, accel = _backend(settings)
+    value = {"family": settings.family, "model": settings.model.name,
+             "confidence": round(settings.confidence, 2), "reason": settings.reason, "backend": backend}
+    if accel is not None:
+        value["accel"] = accel  # что выбрал auto и почему — строка в /model
+    return value
 
 
 def label(settings: DetectorSettings | None) -> str:
-    return f"{settings.family}/{settings.model.name}" if settings is not None else "none"
+    return score_key(settings.family, settings.model.name, _backend(settings)[0]) if settings is not None else "none"
 
 
 def error_code(exc: BaseException) -> str:
@@ -205,6 +236,13 @@ class ModelManager:
         except ValueError as exc:
             configured = None
             self.log(f"person_model_config_invalid error={exc}")
+        try:
+            person_backends.configured()
+        except ValueError as exc:
+            # Ошибка настройки бэкенда — не повод стирать выбор модели из бота:
+            # камеры ждут (person_model_unavailable), выбор цел до исправления конфига.
+            self.log(f"person_backend_config_invalid error={exc}")
+            return None
         if choice:
             try:
                 chosen = choice_settings(choice, self.env)
@@ -212,6 +250,12 @@ class ModelManager:
                 self._report(status, active=chosen)
                 return chosen
             except Exception as exc:
+                if person_backends.is_backend_error(exc):
+                    # Не грузится бэкенд, а не выбранный файл: та же беда у модели из
+                    # конфига, а выбор из бота нужен целым, когда бэкенд починят.
+                    self.log(f"person_backend_unavailable family={choice.get('family')} "
+                             f"file={choice.get('model')} error={exc}")
+                    return None
                 # Откат на запуске: выбранный в боте файл пропал или испорчен.
                 self.log(f"person_model_rollback stage=start family={choice.get('family')} "
                          f"file={choice.get('model')} error={error_code(exc)}")

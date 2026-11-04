@@ -124,6 +124,34 @@ class ModelMenuTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([text for text, _ in self.buttons(menu)], ["✅ YOLOv5", "YOLOX", "YOLOv8-style", self.t("console.thresholds")])
         self.assertEqual(await self.bot.on_model(STRANGER), self.t("no_access"))
 
+    async def test_menu_says_which_backend_runs_the_model_and_why(self):
+        active = {"family": "yolov5", "model": "yolov5n.onnx", "confidence": 0.35, "backend": "onnxruntime"}
+        cases = (
+            ({"requested": "auto", "backend": "rknn", "reason": "selfcheck_ok", "accelerator": "rk3576",
+              "ms": 52, "cpu_ms": 270},
+             self.t("model.accel_on", accelerator="rk3576", backend="rknn", ms=52, cpu_ms=270)),
+            ({"requested": "auto", "backend": "onnxruntime", "reason": "no_accelerator"},
+             self.t("model.accel_none", backend="onnxruntime")),
+            ({"requested": "auto", "backend": "onnxruntime", "reason": "rknn_device_missing", "accelerator": "rk3576"},
+             self.t("model.accel_fallback", accelerator="rk3576", backend="onnxruntime",
+                    reason=self.t("model.accel_reason.rknn_device_missing"))),
+            ({"requested": "rknn", "backend": "onnxruntime", "reason": "person_selfcheck_score_mismatch",
+              "accelerator": "rk3576"},
+             self.t("model.accel_fallback", accelerator="rk3576", backend="onnxruntime",
+                    reason=self.t("model.accel_reason.selfcheck"))),
+            ({"requested": "auto", "backend": "onnxruntime", "reason": "weird_code", "accelerator": "rk3576"},
+             self.t("model.accel_fallback", accelerator="rk3576", backend="onnxruntime",
+                    reason=self.t("model.accel_reason.other", code="weird_code"))),
+        )
+        for accel, line in cases:
+            with self.subTest(reason=accel["reason"]):
+                text = self.bot.model_text({"active": {**active, "accel": accel}, "families": [], "models": []})
+                self.assertIn(line, text)
+        # Бэкенд задан явно (cpu/onnxruntime/cv2) или движок старый — строки нет.
+        for extra in ({}, {"accel": {"requested": "cv2", "backend": "cv2", "reason": "cpu_requested"}}):
+            text = self.bot.model_text({"active": {**active, **extra}, "families": [], "models": []})
+            self.assertNotIn(self.t("model.accel_none", backend="cv2").split(",")[0], text)
+
     async def test_console_has_model_button(self):
         markup = await self.bot.console_markup()
         datas = [b.callback_data for row in markup.inline_keyboard for b in row]

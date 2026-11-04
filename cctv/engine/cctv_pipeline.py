@@ -19,7 +19,7 @@ from .onvif_motion_gate import OnvifMotionGate
 from .model_switch import ModelManager
 from .threshold_calibration import ThresholdManager
 from .still_object_filter import StillObjectFilter
-from . import person_diag
+from . import person_backends, person_diag, person_models
 
 # cv2 открывает RTSP тем же ffmpeg: транспорт задаётся только через это окружение
 # и должен совпадать с recorder, иначе frame-diff молча деградирует в fallback.
@@ -843,7 +843,8 @@ def detect(camera: Camera, bridge: Bridge) -> None:
             person_detector = models.register(camera.camera_id)
             model = person_detector.settings
             print(f"person_model camera={camera.camera_id} family={model.family} file={model.model.name} "
-                  f"confidence={model.confidence:.2f} reason={model.reason}", flush=True)
+                  f"confidence={model.confidence:.2f} reason={model.reason} "
+                  f"{person_backends.describe(person_models.choose_backend(model).backend)}", flush=True)
         except Exception:
             # Пилот обязан молчать, а не незаметно откатываться к frame-diff:
             # иначе пользователь снова получил бы «движение», а не человека.

@@ -27,7 +27,7 @@ from collections.abc import Callable, Mapping
 
 import numpy as np
 
-from . import person_detector, person_detector_yolov8, person_detector_yolox
+from . import person_accel, person_detector, person_detector_yolov8, person_detector_yolox
 
 
 @dataclasses.dataclass(frozen=True)
@@ -39,7 +39,7 @@ class Family:
     confidence: float
     license: str
     bundled: bool  # входит ли файл по умолчанию в образ
-    factory: Callable[[pathlib.Path, float], object]
+    factory: Callable[..., object]  # (файл, порог, бэкенд | None)
     # Форма выхода (без батча), по которой файл узнаётся как «своего» семейства.
     # Адаптер разбирает и чужой выход без ошибки (YOLOX на 640 отдаёт (8400, 85) —
     # для YOLOv5-разбора это мусор, а не исключение), поэтому смена модели сверяет
@@ -52,13 +52,15 @@ class Family:
 _CELLS_640 = (8400, 8500)  # сетки 80²+40²+20² и с P6-головой ещё 10²
 FAMILIES: dict[str, Family] = {
     "yolov5": Family("yolov5", "YOLOv5", "yolov5n.onnx", 0.35, "AGPL-3.0 (Ultralytics)", False,
-                     lambda path, conf: person_detector.PersonDetector(path, conf),
+                     lambda path, conf, backend=None: person_detector.PersonDetector(path, conf, backend),
                      lambda shape: shape[0] in tuple(3 * n for n in _CELLS_640) and shape[1] >= 6),
     "yolox": Family("yolox", "YOLOX", "yolox_tiny.onnx", 0.30, "Apache-2.0 (Megvii)", True,
-                    lambda path, conf: person_detector_yolox.YoloxPersonDetector(path, conf),
+                    lambda path, conf, backend=None: person_detector_yolox.YoloxPersonDetector(
+                        path, conf, backend=backend),
                     lambda shape: shape[0] == len(person_detector_yolox.GRID) and shape[1] >= 6),
     "yolov8": Family("yolov8", "YOLOv8-style", "yolov8n.onnx", 0.30, "AGPL-3.0 (Ultralytics)", False,
-                     lambda path, conf: person_detector_yolov8.Yolov8PersonDetector(path, conf),
+                     lambda path, conf, backend=None: person_detector_yolov8.Yolov8PersonDetector(
+                         path, conf, backend=backend),
                      lambda shape: shape[1] in _CELLS_640 and shape[0] >= 5),
 }
 DEFAULT_FAMILY = "yolox"  # вердикт бенча T-20261003-02: recall 0.951 против 0.877, ложных 1 против 4
@@ -128,6 +130,13 @@ def resolve(env: Mapping[str, str] = os.environ, legacy_model: pathlib.Path = LE
     return DetectorSettings(family_name, model, confidence, reason)
 
 
+def choose_backend(settings: DetectorSettings) -> person_accel.Choice:
+    """Чем исполнять модель (``person_accel``): выбор кэшируется на файл модели."""
+    family = FAMILIES[settings.family]
+    return person_accel.choose(settings.model, settings.family,
+                               lambda backend: family.factory(settings.model, settings.confidence, backend))
+
+
 def build_person_detector(settings: DetectorSettings | None = None, probe: bool = False):
     """Детектор по настройке; нет файла или ONNX не читается — исключение.
 
@@ -136,7 +145,10 @@ def build_person_detector(settings: DetectorSettings | None = None, probe: bool 
     чтобы откатиться до того, как старый детектор отпущен.
     """
     settings = settings or resolve()
-    detector = FAMILIES[settings.family].factory(settings.model, settings.confidence)
+    family = FAMILIES[settings.family]
+    # Бэкенд — на файл модели: при auto ускоритель после самопроверки, иначе CPU.
+    backend = choose_backend(settings).backend
+    detector = family.factory(settings.model, settings.confidence, backend)
     if probe:
         detector.detect(np.zeros((360, 640, 3), dtype=np.uint8))
         output = detector.net.forward()  # вход тот же, что у detect выше

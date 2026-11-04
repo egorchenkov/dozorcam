@@ -49,7 +49,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable
 
-from .model_switch import _read, _write, label
+from .model_switch import _read, _write, label, score_key
 
 STATE_NAME = "person_threshold.json"
 OVERRIDE_NAME = "person_threshold.override.json"
@@ -224,11 +224,24 @@ class ThresholdManager:
         with self.lock:
             calibration = self.cameras[camera_id] = CameraCalibration(self, camera_id, holder)
             state = self._state()
+            previous = state["cameras"].get(camera_id)
             entry = self._entry(state, camera_id, holder)
             if entry.get("state") == "collecting":  # перезапуск посреди калибровки — начать заново
                 entry["collected"] = 0
                 calibration.begin()
+            backend_changed = (isinstance(previous, dict) and previous is not entry
+                               and previous.get("state") in ("calibrated", "collecting")
+                               and str(previous.get("model")).partition("@")[0] == entry["model"].partition("@")[0])
+            if backend_changed and isinstance(previous.get("result"), dict):
+                # До своей калибровки — прежний порог: оценки того же графа на CPU и NPU
+                # расходятся на ~0.02, это ближе к правде, чем стартовый порог семейства.
+                entry["result"] = {**previous["result"], "reason": "previous_backend"}
             self._save(state)
+            if backend_changed:
+                # Та же модель, другой бэкенд по оценкам (CPU ↔ NPU INT8): порог калибровался —
+                # калибруется заново на новых оценках, как после смены модели.
+                self.begin([camera_id], "backend")
+                state = self._state()
             self.apply(camera_id, state)
         return calibration
 
@@ -348,7 +361,7 @@ def overview(state_dir: pathlib.Path, cameras: list[tuple[str, str]], active: di
     overrides = _read(state_dir / OVERRIDE_NAME)
     request = _read(state_dir / REQUEST_NAME)
     active = active if isinstance(active, dict) and active.get("family") else None
-    model = f"{active['family']}/{active.get('model')}" if active else None
+    model = score_key(active["family"], active.get("model"), active.get("backend")) if active else None
     start = float(active.get("confidence") or 0) if active else 0.0
     rows = []
     for camera_id, title in cameras:
@@ -382,7 +395,7 @@ def set_override(state_dir: pathlib.Path, camera_id: str, value: float | None, a
     if value is None:
         overrides.pop(camera_id, None)
     else:
-        overrides[camera_id] = {"model": f"{active['family']}/{active.get('model')}",
+        overrides[camera_id] = {"model": score_key(active["family"], active.get("model"), active.get("backend")),
                                 "value": round(float(value), 2), "at": round(time.time())}
     state_dir.mkdir(parents=True, exist_ok=True)
     _write(state_dir / OVERRIDE_NAME, overrides)

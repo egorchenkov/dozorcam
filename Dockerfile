@@ -3,6 +3,11 @@
 #
 #   docker buildx build --platform linux/arm64,linux/amd64 -t dozorcam:dev .
 #
+# Вариант с рантаймом OpenVINO (бэкенд детектора openvino: Intel CPU/iGPU/NPU) — отдельная
+# цель, базовый образ (цель по умолчанию — последняя стадия) от неё не меняется:
+#
+#   docker buildx build --platform linux/arm64,linux/amd64 --target openvino -t dozorcam:dev-openvino .
+#
 # Сборка кросс-платформенная без эмуляции: всё, что исполняется, работает в стадиях
 # под $BUILDPLATFORM (pip ставит колёса целевой архитектуры через --platform), а
 # финальная стадия под $TARGETPLATFORM состоит только из COPY — QEMU/binfmt на
@@ -24,11 +29,23 @@ ARG MODEL_URL=https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.
 ARG MODEL_SHA256=427cc366d34e27ff7a03e2899b5e3671425c262ea2291f88bb942bc1cc70b0f7
 ADD --checksum=sha256:${MODEL_SHA256} ${MODEL_URL} /out/usr/share/cctv/models/yolox_tiny.onnx
 # ADD с URL кладёт файл 0600 root — chmod ниже, иначе non-root детектор его не прочтёт.
+# Рантайм NPU Rockchip (librknnrt, C API) — только в образ arm64: им исполняется бэкенд rknn,
+# который auto включает после самопроверки (cctv/engine/person_accel.py). Версия — как у
+# rknn-toolkit2 конвертации (scripts/models/rknn-toolkit.Dockerfile); лицензия — RKNN SDK License.
+ARG RKNNRT_URL=https://raw.githubusercontent.com/airockchip/rknn-toolkit2/v2.5.0/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so
+ARG RKNNRT_SHA256=4b6cc575bedf8952b13db4b1190fa3b3d2ac213f00be774ff6ccd19d651970c0
+ARG RKNNRT_LICENSE_URL=https://raw.githubusercontent.com/airockchip/rknn-toolkit2/v2.5.0/LICENSE
+ARG RKNNRT_LICENSE_SHA256=d005b4a9a787ac1023fc7d353d9f263047e892b4edb9207303915e4a29b93c8e
+ADD --checksum=sha256:${RKNNRT_SHA256} ${RKNNRT_URL} /tmp/rknnrt/librknnrt.so
+ADD --checksum=sha256:${RKNNRT_LICENSE_SHA256} ${RKNNRT_LICENSE_URL} /tmp/rknnrt/LICENSE
 COPY requirements.txt /src/requirements.txt
 RUN set -eu; \
+    install -d -m 0755 /out/usr/lib /out/usr/share/doc/dozorcam; \
     case "$TARGETARCH" in \
       amd64) arch=x86_64 ;; \
-      arm64) arch=aarch64 ;; \
+      arm64) arch=aarch64; \
+             install -m 0644 /tmp/rknnrt/librknnrt.so /out/usr/lib/librknnrt.so; \
+             install -m 0644 /tmp/rknnrt/LICENSE /out/usr/share/doc/dozorcam/RKNN-SDK-LICENSE ;; \
       *) echo "архитектура $TARGETARCH не поддерживается" >&2; exit 1 ;; \
     esac; \
     pip install --no-cache-dir --disable-pip-version-check --root-user-action=ignore \
@@ -54,7 +71,20 @@ RUN install -d -m 0700 /out/var/lib/cctv/state /out/var/lib/cctv/buffer /out/var
  && chmod 0755 /out/app/scripts/retention-guard.sh \
  && chmod 0644 /out/usr/share/cctv/models/yolox_tiny.onnx
 
-FROM ${PYTHON_IMAGE}
+# Пакет openvino — отдельно от базовых зависимостей, без них (numpy уже в базе).
+FROM build AS openvino-build
+ARG TARGETARCH
+COPY requirements-openvino.txt /src/requirements-openvino.txt
+RUN set -eu; \
+    case "$TARGETARCH" in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; *) exit 1 ;; esac; \
+    pip install --no-cache-dir --disable-pip-version-check --root-user-action=ignore \
+        --target /out/openvino --only-binary=:all: --no-deps \
+        --implementation cp --python-version 3.12 \
+        --platform manylinux_2_35_$arch --platform manylinux_2_28_$arch --platform manylinux2014_$arch \
+        -r /src/requirements-openvino.txt \
+ && rm -rf /out/openvino/bin
+
+FROM ${PYTHON_IMAGE} AS runtime
 ARG CCTV_UID=10001
 LABEL org.opencontainers.image.title="Dozorcam" \
       org.opencontainers.image.source="https://github.com/egorchenkov/dozorcam" \
@@ -64,6 +94,7 @@ COPY --from=ffmpeg /ffmpeg /ffprobe /usr/local/bin/
 COPY --from=build /out/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=build /out/usr/share/cctv /usr/share/cctv
 COPY --from=build /out/usr/share/doc/dozorcam /usr/share/doc/dozorcam
+COPY --from=build /out/usr/lib /usr/lib
 COPY --from=build /out/app /app
 COPY --from=build --chown=${CCTV_UID}:${CCTV_UID} /out/var/lib/cctv /var/lib/cctv
 COPY --from=build --chown=${CCTV_UID}:${CCTV_UID} /out/run/cctv /run/cctv
@@ -84,3 +115,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD ["python", "-m", "cctv.container", "health"]
 ENTRYPOINT ["python", "-m", "cctv.container"]
 CMD ["engine"]
+
+# --target openvino: базовый образ + слой с пакетом openvino.
+FROM runtime AS openvino
+COPY --from=openvino-build /out/openvino /usr/local/lib/python3.12/site-packages
+
+# Цель по умолчанию — базовый образ, без OpenVINO.
+FROM runtime

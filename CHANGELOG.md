@@ -3,7 +3,62 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [SemVer](https://semver.org/).
 Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
-## [Unreleased]
+## [0.8.0] — 2026-11-05
+
+### Added
+
+- Detector accelerators: what runs the person detector (CPU, Rockchip NPU, OpenVINO, CUDA,
+  Hailo), the self-check and fallback, `.rknn` conversion and CPU/NPU sizing on one page —
+  [docs/accelerators.md](docs/accelerators.md), in Russian [docs/accelerators.ru.md](docs/accelerators.ru.md).
+- Person detector backends: `[engine] person_backend` = `auto` (default, below), `cpu`,
+  `onnxruntime` (the CPU reference: same model file, faster) or `cv2` (as in 0.7 and earlier;
+  `cpu` and `auto` use it when the `onnxruntime` package is missing), `person_threads` — threads per inference,
+  by default all cores available to the container but at most four. Same boxes,
+  confidences and thresholds on both backends: on 115 frames with people, fp32 graphs
+  match `cv2` to 1e-4, an fp16 graph on arm64 differs by up to 0.02 ([docs/models.md](docs/models.md#backends-what-runs-the-model)).
+- fp32 is the default graph for the CPU on every architecture, with milliseconds per frame of
+  `cv2` and `onnxruntime` on fp16/fp32/int8 graphs for x86, Neoverse-N1 and Cortex-A72
+  (`bench/backends-matrix.sh`; on A72 fp16 is not faster than fp32); int8 on the CPU is not
+  used — it loses people. When onnxruntime opens an fp16 graph, the engine log says so once
+  with the conversion command. `scripts/models/convert.py` makes fp32 and int8 variants of a
+  YOLOv5 graph ([docs/models.md](docs/models.md#graph-precision-fp32-for-the-cpu)).
+- `scripts/models/rknn-convert.sh`: YOLOv5 ONNX → INT8 `.rknn` for RK3576, RK3588, RK3568 and
+  RK3566 in a pinned `rknn-toolkit2` 2.5.0 container, calibrated on your own frames
+  ([docs/models.md](docs/models.md#converting-for-the-rockchip-npu)).
+- `person_backend = "rknn"` (experimental): YOLOv5 on the Rockchip NPU (RK3576, RK3588,
+  RK3568/RK3566) through the `librknnrt` C API, model from `rknn-convert.sh`. On RK3576: 50 ms per frame against 265 ms on its CPU; INT8 lowers scores by
+  0.02 on average (82 of 85 people still found at 0.35). The per-camera threshold is kept
+  per backend: a threshold found or set on the CPU does not apply on `rknn` and vice versa,
+  and after a change of backend a calibrated camera recalibrates by itself, keeping its
+  previous automatic threshold until then
+  ([docs/models.md](docs/models.md#rockchip-npu-rknn-experimental)).
+- `person_backend = "auto"` (default): on start the engine looks for an accelerator (now the
+  Rockchip NPU), runs a self-check — the same test frames through the accelerator and the
+  CPU reference, scores and boxes must match within a tolerance — and uses the accelerator
+  only if it passes. Anything else (no NPU device in the container, no runtime library, no
+  `.rknn` next to the model, a failed run or a mismatch) silently falls back to `onnxruntime`
+  on the CPU: one `person_backend_selected … reason=…` line in the engine log and a line in
+  `/model` of the bot. Without an accelerator (x86, a VM, ARM without NPU) `/model` says
+  "No accelerator, CPU". A forced `rknn` passes the same self-check and falls back the same way.
+- The arm64 image contains the Rockchip NPU runtime `librknnrt` 2.5.0 (RKNN SDK License, see
+  `THIRD_PARTY.md`); the amd64 image does not. `compose.yml` passes the NPU device nodes and
+  their groups to the engine only where they exist: the `dozorcam` wrapper finds them on the
+  host (`CCTV_NPU_CARD`/`CCTV_NPU_RENDER` in `.env` to set them by hand); without an NPU the
+  engine starts as before.
+- More detector accelerators behind the same backend contract (self-check against the CPU
+  reference, silent fallback to `onnxruntime`; `auto` tries `rknn`, then `cuda`, `openvino`,
+  `hailo`): `person_backend = "openvino"` — Intel CPU/iGPU/NPU through OpenVINO on the same
+  ONNX file, device from `CCTV_OPENVINO_DEVICE` (default `AUTO`); checked on a CPU against the
+  reference, iGPU and NPU are detected but not yet checked on hardware; in `auto` OpenVINO is
+  used only with an Intel iGPU or NPU present. `cuda` (onnxruntime TensorRT/CUDA, NVIDIA and
+  Jetson, needs `onnxruntime-gpu`) and `hailo` (Hailo-8/8L through HailoRT, `<model>.hef` next
+  to the ONNX) are experimental and not checked on hardware. Coral EdgeTPU, AMD iGPU, AMD XDNA
+  and Apple CoreML are not supported.
+- OpenVINO is not in the base image: `docker build --target openvino` adds a layer with
+  `openvino` 2026.4.1 (`requirements-openvino.txt`, no telemetry); the base image is unchanged.
+  `compose.yml` passes `/dev/dri` and the group of an Intel `i915`/`xe` render node to the
+  engine only where it exists (the `dozorcam` wrapper finds it, `CCTV_INTEL_DRI`/
+  `CCTV_INTEL_RENDER_GID` in `.env` to set it by hand); without an iGPU the engine starts as before.
 
 ## [0.7.3] — 2026-11-04
 

@@ -3,3 +3,5 @@ numpy==2.5.2
 opencv-python-headless==5.0.0.93
 httpx==0.28.1
 python-telegram-bot==22.7
+# Бэкенд детектора onnxruntime (CPU): колёса manylinux под amd64 и arm64.
+onnxruntime==1.31.1

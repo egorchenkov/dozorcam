@@ -7,7 +7,7 @@
 в Telegram: в личку, в группу или в группу с темами — тема на камеру или на локацию.
 Облака нет: видео живёт в RAM узла и в вашем чате.
 
-Текущий релиз: **<!--site:version-->0.7.3<!--/site-->** ·
+Текущий релиз: **<!--site:version-->0.8.0<!--/site-->** ·
 [Список изменений](CHANGELOG.ru.md) · [Релизы](https://github.com/egorchenkov/dozorcam/releases)
 
 > Проект распространяется «как есть» (см. [CONTRIBUTING](CONTRIBUTING.md#по-русски)):
@@ -119,7 +119,7 @@ ONVIF (Profile S), любая RTSP-камера, камеры без ONVIF по 
 ## Документация
 
 [Установка и обновление](docs/install.ru.md) · [Справочник: режимы, команды, настройки,
-сеть, TLS](docs/reference.ru.md) · [Модели детектора и пороги](docs/models.md) ·
+сеть, TLS](docs/reference.ru.md) · [Модели детектора и пороги](docs/models.md) · [Ускорители детектора](docs/accelerators.ru.md) ·
 [Камеры](docs/cameras.ru.md) · [Железо](docs/sizing.ru.md) · [Все документы](docs/README.md)
 
 Разработка: `python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt &&

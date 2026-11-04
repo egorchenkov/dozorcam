@@ -1,0 +1,3 @@
+# Ложное срабатывание generic-api-key в истории: выдуманный ключ тестовой заготовки
+# secrets.toml (коммит 9d35599); в дереве значение заменено на заведомо тестовое.
+9d35599e3f79e4868c84f45a974be11515c7f902:tests/test_failover_multi_machine.py:generic-api-key:97

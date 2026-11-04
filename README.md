@@ -7,7 +7,7 @@ recording buffer from your IP cameras, looks for people (motion gate → YOLO) a
 snapshots and clips to Telegram: to your private chat, a group, or a forum group with a
 topic per camera or per location. No cloud: video lives in the node's RAM and in your chat.
 
-Current release: **<!--site:version-->0.7.3<!--/site-->** ·
+Current release: **<!--site:version-->0.8.0<!--/site-->** ·
 [Changelog](CHANGELOG.md) · [Releases](https://github.com/egorchenkov/dozorcam/releases)
 
 > Provided **as is** (see [CONTRIBUTING](CONTRIBUTING.md)): a one-person home project,
@@ -120,7 +120,7 @@ Tantos; table of paths and checked cameras: [docs/cameras.md](docs/cameras.md).
 ## Documentation
 
 [Install and update](docs/install.md) · [Reference: modes, commands, configuration,
-network, TLS](docs/reference.md) · [Detector models and thresholds](docs/models.md) ·
+network, TLS](docs/reference.md) · [Detector models and thresholds](docs/models.md) · [Detector accelerators](docs/accelerators.md) ·
 [Cameras](docs/cameras.md) · [Sizing](docs/sizing.md) · [All documents](docs/README.md)
 
 Development: `python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt &&

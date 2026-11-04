@@ -21,7 +21,7 @@ from unittest import mock
 
 import numpy as np
 
-from cctv.engine import cctv_bridge, model_switch, person_models
+from cctv.engine import cctv_bridge, model_switch, person_backends, person_models
 from cctv.engine.model_switch import ModelManager, catalog, request_switch
 from cctv.engine.person_models import DetectorSettings
 
@@ -107,6 +107,21 @@ class StartupTest(Base):
         self.assertFalse((self.state / model_switch.CHOICE_NAME).exists())
         self.assertEqual(self.status()["state"], "rolled_back")
         self.assertTrue(any("person_model_rollback stage=start" in line for line in self.logs))
+
+    def test_backend_failure_at_start_keeps_bot_choice(self):
+        (self.state / model_switch.CHOICE_NAME).write_text('{"family": "yolox", "model": "yolox_tiny.onnx"}')
+        with mock.patch.object(self, "build", side_effect=RuntimeError("person_backend_runtime_missing")):
+            self.assertIsNone(self.manager().settings)
+        self.assertTrue((self.state / model_switch.CHOICE_NAME).exists())
+        self.assertTrue(any("person_backend_unavailable" in line for line in self.logs))
+
+    def test_bad_backend_setting_keeps_bot_choice(self):
+        (self.state / model_switch.CHOICE_NAME).write_text('{"family": "yolox", "model": "yolox_tiny.onnx"}')
+        with mock.patch.object(person_backends, "_configured", None), \
+                mock.patch.dict(person_backends.os.environ, {"CCTV_PERSON_BACKEND": "gpu"}):
+            self.assertIsNone(self.manager().settings)
+        self.assertTrue((self.state / model_switch.CHOICE_NAME).exists())
+        self.assertTrue(any("person_backend_config_invalid" in line for line in self.logs))
 
 
 class SwitchQueueTest(Base):

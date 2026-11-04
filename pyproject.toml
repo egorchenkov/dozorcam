@@ -25,6 +25,7 @@ include = ["cctv*"]
 
 [tool.setuptools.package-data]
 "cctv.i18n" = ["locales/*.json"]
+"cctv.engine" = ["selfcheck/*.jpg", "selfcheck/README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

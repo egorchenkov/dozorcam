@@ -33,6 +33,27 @@ repository nor the image contains or downloads them. If you put such a file into
 `config/models/` yourself, its license applies to your installation; see
 [docs/models.md](docs/models.md#where-to-put-your-own-weights).
 
+## Rockchip NPU runtime: librknnrt 2.5.0 — RKNN SDK License (arm64 image only)
+
+- `/usr/lib/librknnrt.so` in the **arm64** image; the amd64 image does not contain it.
+  It runs the `rknn` person detector backend on Rockchip RK3576/RK3588/RK3568/RK3566 NPUs
+  and is loaded only when such an NPU is found ([docs/models.md](docs/models.md)).
+- From `airockchip/rknn-toolkit2` `v2.5.0`, `rknpu2/runtime/Linux/librknn_api/aarch64/`:
+  <https://github.com/airockchip/rknn-toolkit2/tree/v2.5.0/rknpu2/runtime>, checksum pinned in
+  `Dockerfile`. Copyright (c) Rockchip Electronics Co., Ltd. Proprietary binary, used
+  unmodified, for applications compatible with Rockchip products. License: RKNN SDK
+  License — <https://github.com/airockchip/rknn-toolkit2/blob/v2.5.0/LICENSE>, its text is
+  in the image at `/usr/share/doc/dozorcam/RKNN-SDK-LICENSE`.
+
+## Intel OpenVINO runtime 2026.4.1 — Apache-2.0 (`-openvino` image variant only)
+
+- Python package `openvino` (`requirements-openvino.txt`), added only by the
+  `--target openvino` build (tags ending in `-openvino`); the default image does not
+  contain it. It runs the `openvino` person detector backend (Intel CPU/iGPU/NPU).
+- Copyright (C) Intel Corporation. License: Apache-2.0; texts of the components it bundles —
+  `openvino-2026.4.1.dist-info/licenses/` under `/usr/local/lib/python3.12/site-packages`
+  in that image.
+
 ## Python packages (`requirements.txt` and their dependencies)
 
 | Package | Version | License |

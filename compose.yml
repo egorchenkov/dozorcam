@@ -49,6 +49,21 @@ services:
       # (установщик: DOZORCAM_BUFFER=disk). Там — том engine-buffer или каталог хоста
       # CCTV_BUFFER_DISK (только SSD: кольцо пишется непрерывно, ~0,5 МБ/с на камеру).
       CCTV_BUFFER_DIR: ${CCTV_BUFFER_DIR:-/var/lib/cctv/buffer}
+    # NPU Rockchip для детектора (person_backend = auto, docs/models.md): узлы card/render
+    # драйвера rknpu и их группы. Обёртка dozorcam находит их на хосте сама; без NPU —
+    # заглушки: /dev/null под чужим именем, своя группа и nogroup (группы не должны
+    # повторяться), старт как раньше.
+    # Intel iGPU (бэкенд openvino, образ -openvino): каталог /dev/dri и группа его
+    # render-узла i915/xe — тоже от обёртки; без iGPU — заглушка и группа 65533, которой
+    # в образе ничего не принадлежит.
+    devices:
+      - ${CCTV_NPU_CARD:-/dev/null}:${CCTV_NPU_CARD:-/dev/cctv-no-npu-card}
+      - ${CCTV_NPU_RENDER:-/dev/null}:${CCTV_NPU_RENDER:-/dev/cctv-no-npu-render}
+      - ${CCTV_INTEL_DRI:-/dev/null}:${CCTV_INTEL_DRI:-/dev/cctv-no-intel-dri}
+    group_add:
+      - "${CCTV_NPU_CARD_GID:-10001}"
+      - "${CCTV_NPU_RENDER_GID:-65534}"
+      - "${CCTV_INTEL_RENDER_GID:-65533}"
     volumes:
       - ${CCTV_CONFIG_PATH:-./config}:/etc/cctv:ro
       - engine-state:/var/lib/cctv/state

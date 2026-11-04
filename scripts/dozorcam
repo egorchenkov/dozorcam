@@ -6,7 +6,7 @@
 #   dozorcam update [-y] [ВЕРСИЯ] | backup [ФАЙЛ] | restore [-y] ФАЙЛ
 #   dozorcam uninstall [-y] [--volumes] [--image]
 #
-# Образ в .env закреплён по digest (CCTV_IMAGE_TAG=0.7.3@sha256:…): pull по тегу
+# Образ в .env закреплён по digest (CCTV_IMAGE_TAG=0.8.0@sha256:…): pull по тегу
 # не перепрыгнет молча через версии. update берёт версию из GitHub Releases,
 # показывает CHANGELOG между версиями и при провале healthcheck возвращает прежние
 # .env и compose.yml (прежний образ остаётся локально — откат без сети).
@@ -91,7 +91,34 @@ dock() {
   $DOCKER "$@"
 }
 
-dc() { dock compose --project-directory "$DIR" -f "$DIR/compose.yml" --env-file "$ENV_FILE" "$@"; }
+npu_env() {  # узлы NPU Rockchip хоста → окружение compose (devices/group_add движка)
+  [ -n "$(env_get CCTV_NPU_RENDER)" ] && return 0  # задано в .env — как есть
+  for node in /dev/dri/by-path/*npu-card; do [ -e "$node" ] && CCTV_NPU_CARD=$(readlink -f "$node"); done
+  for node in /dev/dri/by-path/*npu-render; do [ -e "$node" ] && CCTV_NPU_RENDER=$(readlink -f "$node"); done
+  [ -z "${CCTV_NPU_RENDER:-}" ] && [ -e /dev/rknpu ] && CCTV_NPU_RENDER=/dev/rknpu  # старые ядра: один узел
+  [ -n "${CCTV_NPU_RENDER:-}" ] && CCTV_NPU_RENDER_GID=$(stat -c %g "$CCTV_NPU_RENDER") && export CCTV_NPU_RENDER CCTV_NPU_RENDER_GID
+  if [ -n "${CCTV_NPU_CARD:-}" ]; then
+    export CCTV_NPU_CARD
+    gid=$(stat -c %g "$CCTV_NPU_CARD")  # та же группа, что у render, — второй раз не добавлять
+    [ "$gid" != "${CCTV_NPU_RENDER_GID:-}" ] && CCTV_NPU_CARD_GID=$gid && export CCTV_NPU_CARD_GID
+  fi
+  return 0
+}
+
+intel_env() {  # iGPU Intel хоста (render-узел i915/xe) → /dev/dri и его группа (бэкенд openvino)
+  [ -n "$(env_get CCTV_INTEL_DRI)" ] && return 0  # задано в .env — как есть
+  for node in /sys/class/drm/renderD*; do
+    [ -e "$node/device/driver" ] || continue
+    case "$(basename "$(readlink -f "$node/device/driver")")" in
+      i915|xe) [ -e "/dev/dri/${node##*/}" ] || continue
+               CCTV_INTEL_DRI=/dev/dri CCTV_INTEL_RENDER_GID=$(stat -c %g "/dev/dri/${node##*/}")
+               export CCTV_INTEL_DRI CCTV_INTEL_RENDER_GID; return 0 ;;
+    esac
+  done
+  return 0
+}
+
+dc() { npu_env; intel_env; dock compose --project-directory "$DIR" -f "$DIR/compose.yml" --env-file "$ENV_FILE" "$@"; }
 
 image_name() { name=$(env_get CCTV_IMAGE); printf '%s\n' "${name:-$DEFAULT_IMAGE}"; }
 image_tag() { tag=$(env_get CCTV_IMAGE_TAG); printf '%s\n' "${tag:-latest}"; }

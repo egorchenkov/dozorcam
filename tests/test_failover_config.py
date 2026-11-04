@@ -243,7 +243,11 @@ class ConfigDistributionTest(unittest.TestCase):
         self.assertEqual(rev, self.store("a", "engine").meta()["rev"])
         current = self.store("b", "engine").files()
         share.write_files(self.cfg["b"], current)
-        time.sleep(0.5)
+        # Правка раздаётся, только если агент успел увидеть каталог равным раздаваемому;
+        # проба узла в том же цикле идёт секунды — ждать этого, а не фиксированную паузу.
+        engine_b_store = self.store("b", "engine")
+        self.wait_for(lambda: engine_b_store.seen() == engine_b_store.meta()["sha"],
+                      what="каталог b совпал с раздаваемым")
         edited = current["config.toml"].replace("[bot]\n", "[bot]\nevent_merge_sec = 30\n", 1)
         (self.cfg["b"] / "config.toml").write_text(edited)
         # Store.save пишет файлы, затем meta.json: ждать обоих, иначе meta читается до записи.

@@ -1,0 +1,5 @@
+# Вариант образа -openvino (docker build --target openvino): рантайм OpenVINO для бэкенда
+# детектора openvino (Intel CPU/iGPU/NPU, cctv/engine/person_backends_more.py). Ставится
+# без зависимостей поверх requirements.txt: numpy уже там (openvino требует <2.6), а
+# openvino-telemetry нужен только конвертеру ovc — рантайм без него не пишет телеметрию.
+openvino==2026.4.1

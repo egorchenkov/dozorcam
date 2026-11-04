@@ -17,7 +17,7 @@ from unittest import mock
 import cv2
 import numpy as np
 
-from cctv.engine import model_switch, threshold_calibration as tc
+from cctv.engine import model_switch, person_accel, person_backends, threshold_calibration as tc
 from cctv.engine.model_switch import ModelManager, request_switch
 from cctv.engine.person_models import FAMILIES, DetectorSettings
 
@@ -253,6 +253,66 @@ class EngineTest(Base):
         self.thresholds.poll()
         view = tc.overview(self.state, [("dacha", "Дача")], active)
         self.assertEqual((view["pending"], view["cameras"][0]["state"]), (False, "collecting"))
+
+
+    def backend(self, name: str):
+        """Движок на бэкенде ``name``: для rknn — как будто auto выбрал NPU после самопроверки."""
+        settings = person_backends.BackendSettings(name, 0)
+        choice = person_accel.Choice(settings, "auto" if name == "rknn" else name,
+                                     "selfcheck_ok" if name == "rknn" else "cpu_requested")
+        patch = mock.patch.multiple(person_backends, _configured=settings)
+        peek = mock.patch.object(person_accel, "peek", return_value=choice)
+        patch.start()
+        peek.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(peek.stop)
+
+        class Both:
+            def stop(self):
+                patch.stop()
+                peek.stop()
+        return Both()
+
+    def test_npu_int8_threshold_is_its_own(self):
+        """INT8 на NPU занижает оценки того же графа (T-20261104-47): порог CPU к нему не
+        переносится, ни авто, ни ручной, а калибровка начинается сама; cv2 ↔ onnxruntime —
+        порог общий."""
+        cpu = self.backend("onnxruntime")
+        tc.request_calibration(self.state)
+        self.thresholds.poll()
+        self.frames(self.background(FRAMES + 30, spike=0.45))
+        calibrated = self.holder.confidence
+        self.assertGreater(calibrated, 0.5)
+        tc.set_override(self.state, "city", 0.62, model_switch.catalog(self.state, self.env)["active"])
+        cpu.stop()
+        self.backend("cv2")
+        _models, _thresholds, holder, _cal = self.engine()
+        self.assertEqual(holder.confidence, calibrated, "cv2 и onnxruntime: те же оценки, тот же порог")
+        self.backend("rknn")
+        self.models, self.thresholds, self.holder, self.cal = self.engine()
+        thresholds, holder = self.thresholds, self.holder
+        self.assertEqual(holder.confidence, calibrated, "до своей калибровки на NPU — прежний порог")
+        self.assertEqual((self.entry()["model"], self.entry()["state"], self.entry()["reason"]),
+                         ("yolov5/yolov5n.onnx@rknn", "collecting", "backend"), "калибровка на NPU — сама")
+        self.assertEqual(self.entry()["result"]["reason"], "previous_backend")
+        self.assertTrue(any("reason=backend" in line for line in self.lines))
+        active = model_switch.catalog(self.state, self.env)["active"]
+        self.assertEqual(active["backend"], "rknn")
+        view = tc.overview(self.state, [("dacha", "Дача"), ("city", "Город")], active)
+        self.assertEqual(view["model"], "yolov5/yolov5n.onnx@rknn")
+        self.assertEqual([(c["camera_id"], c["threshold"], c["source"]) for c in view["cameras"]],
+                         [("dacha", calibrated, "auto"), ("city", 0.35, "start")], "ручной порог CPU не перенесён")
+        # Калибровка на оценках NPU: тихий фон — свой порог, прежний CPU-порог ушёл.
+        self.frames(self.background(FRAMES + 30))
+        self.assertEqual((self.entry()["state"], self.entry()["result"]["reason"]), ("calibrated", "start_above_noise"))
+        self.assertEqual(self.holder.confidence, 0.35)
+        tc.set_override(self.state, "dacha", 0.30, active)
+        thresholds.poll()
+        self.assertEqual(holder.confidence, 0.30)
+        self.backend("onnxruntime")
+        _models, _thresholds, holder, _cal = self.engine()
+        self.assertEqual((holder.confidence, self.entry()["state"]), (0.35, "collecting"),
+                         "назад на CPU: ручной порог NPU не действует, калибровка заново")
 
 
 class PipelineWiringTest(unittest.TestCase):

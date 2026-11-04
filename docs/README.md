@@ -10,6 +10,7 @@ Start with the [README](../README.md) · Начните с [README](../README.ru
 | Cameras: RTSP paths by brand, checked cameras | [cameras.md](cameras.md) | [cameras.ru.md](cameras.ru.md) |
 | Failover: nodes, armed mode, switching roles from the bot, sites, automatic takeover by priority | [failover.md](failover.md) | [failover.ru.md](failover.ru.md) |
 | Person detector models, thresholds, your own weights, bench | [models.md](models.md) | — |
+| Detector accelerators: backends (CPU, Rockchip NPU, OpenVINO, CUDA, Hailo-8), automatic choice, self-check and fallback, converting for the NPU, sizing · Ускорители детектора | [accelerators.md](accelerators.md) | [accelerators.ru.md](accelerators.ru.md) |
 | Changelog | [CHANGELOG.md](../CHANGELOG.md) | [CHANGELOG.ru.md](../CHANGELOG.ru.md) (с 0.3.1) |
 | Website (en, ru) with the hardware calculator | [egorchenkov.github.io/dozorcam](https://egorchenkov.github.io/dozorcam/) | [egorchenkov.github.io/dozorcam/ru](https://egorchenkov.github.io/dozorcam/ru/) |
 

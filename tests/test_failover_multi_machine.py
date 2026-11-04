@@ -94,7 +94,7 @@ class PrepareWithWiringTest(unittest.TestCase):
             f'bridge_ca = "{tls}/ca.crt"\n' + FAILOVER)
         secrets = root / "secrets.toml"
         secrets.write_text('[bot]\nbot_token = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"\n\n'
-                           '[failover]\nsecret = "unit-test-failover-secret-0123456789"\n')
+                           '[failover]\nsecret = "test-test-test-test-test-test-test-test"\n')
         secrets.chmod(0o600)
         self.env = {"PATH": os.environ.get("PATH", ""), "CCTV_CONFIG_DIR": str(root), "CCTV_NODE": "dacha",
                     "CCTV_STATE_DIR": str(root / "state"),

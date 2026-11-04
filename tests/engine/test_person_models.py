@@ -116,7 +116,7 @@ class BuildTest(unittest.TestCase):
         self.model.write_bytes(b"x")
 
     def build(self, family, output_shape, probe=False):
-        with mock.patch("cv2.dnn.readNetFromONNX", return_value=DummyNet(output_shape)):
+        with mock.patch("cctv.engine.person_backends.open_net", return_value=DummyNet(output_shape)):
             return build_person_detector(DetectorSettings(family, self.model, 0.5, "test"), probe=probe)
 
     def test_one_adapter_per_family_with_common_interface(self):

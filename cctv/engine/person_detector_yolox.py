@@ -17,6 +17,8 @@ import pathlib
 import cv2
 import numpy as np
 
+from . import person_backends
+
 
 MODEL_PATH = pathlib.Path(os.environ.get("CCTV_PERSON_YOLOX_MODEL", "/usr/share/cctv/models/yolox_tiny.onnx"))
 INPUT_SIZE = 416  # граф экспорта фиксирован на 416×416
@@ -46,13 +48,14 @@ GRID, GRID_STRIDE = _grids()
 
 
 class YoloxPersonDetector:
-    """CPU-only YOLOX-Tiny, один экземпляр на поток камеры."""
+    """YOLOX-Tiny, один экземпляр на поток камеры (бэкенд — person_backends)."""
 
     def __init__(self, model_path: pathlib.Path = MODEL_PATH, confidence: float = PERSON_CONFIDENCE,
-                 stretch: bool = STRETCH) -> None:
+                 stretch: bool = STRETCH, backend: person_backends.BackendSettings | None = None) -> None:
         if not model_path.is_file():
             raise RuntimeError("person_model_missing")
-        self.net = cv2.dnn.readNetFromONNX(str(model_path))
+        # Бэкенд (onnxruntime/cv2/rknn) исполняет граф с интерфейсом cv2.dnn.Net.
+        self.net = person_backends.open_net(model_path, backend)
         self.confidence = confidence
         self.stretch = stretch
 

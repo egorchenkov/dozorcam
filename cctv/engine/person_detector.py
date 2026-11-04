@@ -12,6 +12,8 @@ import pathlib
 import cv2
 import numpy as np
 
+from . import person_backends
+
 
 MODEL_PATH = pathlib.Path(os.environ.get("CCTV_PERSON_MODEL", "/usr/share/cctv/models/yolov5n.onnx"))
 INPUT_SIZE = 640  # pinned YOLOv5n export; его граф не принимает 320x320.
@@ -23,12 +25,14 @@ PERSON_CONFIDENCE = float(os.environ.get("CCTV_PERSON_CONFIDENCE", "0.35"))
 
 
 class PersonDetector:
-    """CPU-only YOLOv5n detector, один экземпляр на поток камеры."""
+    """YOLOv5n detector, один экземпляр на поток камеры (бэкенд — person_backends)."""
 
-    def __init__(self, model_path: pathlib.Path = MODEL_PATH, confidence: float = PERSON_CONFIDENCE) -> None:
+    def __init__(self, model_path: pathlib.Path = MODEL_PATH, confidence: float = PERSON_CONFIDENCE,
+                 backend: person_backends.BackendSettings | None = None) -> None:
         if not model_path.is_file():
             raise RuntimeError("person_model_missing")
-        self.net = cv2.dnn.readNetFromONNX(str(model_path))
+        # Бэкенд (onnxruntime/cv2/rknn) исполняет граф с интерфейсом cv2.dnn.Net.
+        self.net = person_backends.open_net(model_path, backend)
         self.confidence = confidence
 
     def score(self, frame: np.ndarray) -> float:

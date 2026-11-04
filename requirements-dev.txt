@@ -1,2 +1,3 @@
 -r requirements.txt
 pytest
+onnx==1.23.2  # сборка тестовых графов (tests/engine/test_person_backends.py)

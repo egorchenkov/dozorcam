@@ -3179,8 +3179,31 @@ class CctvBot:
         return self._t("model.active", family=self._family_title(catalog, active.get("family")),
                        file=active.get("model") or "?", confidence=float(active.get("confidence") or 0))
 
+    def _accel_line(self, catalog: dict) -> str | None:
+        """Чем движок исполняет модель: ускоритель после самопроверки или CPU и почему."""
+        active = catalog.get("active") if isinstance(catalog.get("active"), dict) else {}
+        accel = active.get("accel")
+        if not isinstance(accel, dict) or accel.get("reason") == "cpu_requested":
+            return None
+        backend, reason = str(accel.get("backend") or "?"), str(accel.get("reason") or "")
+        if reason == "selfcheck_ok":
+            return self._t("model.accel_on", accelerator=accel.get("accelerator") or "?", backend=backend,
+                           ms=accel.get("ms", "?"), cpu_ms=accel.get("cpu_ms", "?"))
+        if reason == "no_accelerator":
+            return self._t("model.accel_none", backend=backend)
+        key = "model.accel_reason." + ("selfcheck" if reason.startswith("person_selfcheck_") else reason)
+        text = self._t(key)
+        if text == key:
+            text = self._t("model.accel_reason.other", code=reason)
+        return self._t("model.accel_fallback", accelerator=accel.get("accelerator") or accel.get("requested") or "?",
+                       reason=text, backend=backend)
+
     def model_text(self, catalog: dict) -> str:
-        lines = [self._t("model.header"), self._active_line(catalog), "", self._t("model.families")]
+        lines = [self._t("model.header"), self._active_line(catalog)]
+        accel = self._accel_line(catalog)
+        if accel:
+            lines.append(accel)
+        lines += ["", self._t("model.families")]
         for item in catalog.get("families") or []:
             lines.append(self._t("model.family_line", title=item.get("title") or item.get("family"),
                                  file=item.get("default_file") or "?",
