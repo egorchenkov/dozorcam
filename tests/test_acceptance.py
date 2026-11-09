@@ -69,8 +69,15 @@ class BotBoundaryTest(unittest.TestCase):
         ни адресов протоколов камер, ни клиентов ONVIF/видео, ни подпроцессов."""
         pattern = re.compile(r"rtsp://|/ISAPI/|^\s*(import|from)\s+(onvif|zeep|cv2|subprocess)\b",
                              re.I | re.M)
+        # Склейка мозаики «Все камеры» (mosaic.py) — единственное место бота с cv2:
+        # она декодирует JPEG, уже полученные от моста (кадры из буфера движка), и
+        # собирает одно фото; кадры разных площадок свести больше негде. К камерам
+        # и видео она не ходит — остальные запреты действуют и для неё.
+        image_only = re.compile(r"rtsp://|/ISAPI/|^\s*(import|from)\s+(onvif|zeep|subprocess)\b"
+                                r"|VideoCapture|cv2\.dnn", re.I | re.M)
         for path in self.runtime:
-            self.assertIsNone(pattern.search(path.read_text(encoding="utf-8")), path.name)
+            check = image_only if path.name == "mosaic.py" else pattern
+            self.assertIsNone(check.search(path.read_text(encoding="utf-8")), path.name)
 
     def test_bot_does_not_import_engine(self):
         pattern = re.compile(r"^\s*(from\s+(\.\.engine|cctv\.engine)|import\s+cctv\.engine)", re.M)

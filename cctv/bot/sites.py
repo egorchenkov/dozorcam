@@ -135,6 +135,9 @@ class Sites:
                       requested_at: str, center_at: str | None = None) -> str:
         return self.for_camera(camera_id).request_media(request_id, camera_id, kind, requested_at, center_at)
 
+    def latest_frame(self, camera_id: str, width: int = 0) -> tuple[bytes, str | None]:
+        return self.for_camera(camera_id).latest_frame(camera_id, width)
+
     def set_camera_state(self, camera_id: str, action: str, title: str | None = None) -> None:
         self.for_camera(camera_id).set_camera_state(camera_id, action, title)
 

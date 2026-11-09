@@ -3,6 +3,24 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [SemVer](https://semver.org/).
 Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
+## [0.9.0] — 2026-11-09
+
+### Added
+
+- "📷 All cameras" on the camera map: one photo, a mosaic of the latest frame of every camera
+  in the order of the map — a grid sized to their number (2×2, 3×2, 3×3, 4×4…), each tile
+  signed with the camera name and the time of its frame, a "no frames" plate for a camera that
+  is down ("paused" for a paused one); more than 16 cameras — several mosaics. Frames come from
+  the engine's rolling buffer (new `GET /v1/cameras/<id>/frame` of the bridge, the first key
+  frame of the newest finished segment), so the cameras are not asked again. The photo stays
+  within the Telegram limits ([docs/reference.md](docs/reference.md#camera-map-and-camera-card)).
+
+### Fixed
+
+- `/nodes`: the confirmation question for moving the bot no longer promises "a few seconds" —
+  it names the same term as the message after confirming (usually within half a minute, up to a
+  minute with a large bot database) and the size of the bot data that moves, when known.
+
 ## [0.8.0] — 2026-11-05
 
 ### Added

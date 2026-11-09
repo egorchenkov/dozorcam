@@ -155,6 +155,24 @@ class Bridge:
         payload = self._json("POST", "/v1/media-requests", json=body)
         return str(payload.get("status") or "accepted")
 
+    def latest_frame(self, camera_id: str, width: int = 0) -> tuple[bytes, str | None]:
+        """Последний кадр камеры из буфера движка (мозаика «Все камеры»): JPEG и
+        время съёмки. Камеру мост при этом не опрашивает; нет свежего кадра —
+        BridgeError("camera_offline")."""
+        path = f"/v1/cameras/{urllib.parse.quote(camera_id)}/frame"
+        try:
+            response = self.client.get(path, params={"width": int(width)} if width else None)
+        except httpx.TimeoutException as exc:
+            raise BridgeError("timeout", str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise BridgeError("unavailable", type(exc).__name__) from exc
+        if response.status_code != 200:
+            raise BridgeError(self._error_code(response), f"HTTP {response.status_code}")
+        body = response.content
+        if not body.startswith(b"\xff\xd8") or len(body) > self.cfg.max_bytes_for("snapshot"):
+            raise BridgeError("unavailable", "frame is not a JPEG within the limit")
+        return body, response.headers.get("x-captured-at") or None
+
     # --- управление камерой -----------------------------------------------
     def set_camera_state(self, camera_id: str, action: str, title: str | None = None) -> None:
         """Пауза/возобновление/переименование/снятие. Адреса и пароли камеры

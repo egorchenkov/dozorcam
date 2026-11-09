@@ -20,6 +20,10 @@ def _button(text: str, data: str) -> dict:
     return {"text": text[:64], "data": data}
 
 
+def _size(lang: str, size: int) -> str:
+    return _t(lang, "nodes.started.size", mb=f"{size / 1048576:.1f}") if size else ""
+
+
 def _fitness(lang: str, role: str, health: dict) -> str:
     if health.get("fit") is None or not health.get("checked_at"):
         return _t(lang, "nodes.not_checked")
@@ -136,7 +140,9 @@ def press(agent, data: str, lang: str | None) -> dict:
         source = agent.holder(role)
         if source == target:
             return {**view(agent, lang), "toast": _t(lang, "nodes.stale")}
-        text = _t(lang, f"nodes.confirm.{role}", source=source, target=target)
+        # Вопрос называет тот же срок и объём state, что и сообщение после подтверждения.
+        size = agent.state_size() if role == "bot" and source == agent.cfg.me else 0
+        text = _t(lang, f"nodes.confirm.{role}", source=source, target=target, size=_size(lang, size))
         return {"text": text, "toast": "", "buttons": [[
             _button(_t(lang, "nodes.button.yes"), f"ok:{role}:{target}:{epoch}"),
             _button(_t(lang, "nodes.button.cancel"), REFRESH)]]}
@@ -157,7 +163,7 @@ def press(agent, data: str, lang: str | None) -> dict:
         size = agent.state_size() if own_bot else 0
         text = _t(lang, "nodes.started.bot" if own_bot else "nodes.started.engine",
                   role=_t(lang, f"nodes.role.{role}"), target=target,
-                  size=_t(lang, "nodes.started.size", mb=f"{size / 1048576:.1f}") if size else "")
+                  size=_size(lang, size))
         buttons = [] if own_bot else [[_button(_t(lang, "nodes.button.refresh"), REFRESH)]]
         return {"text": text, "buttons": buttons, "toast": _t(lang, "nodes.started_toast")}
     return {**view(agent, lang), "toast": _t(lang, "nodes.unknown")}

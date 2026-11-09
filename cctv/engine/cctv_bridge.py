@@ -90,6 +90,12 @@ CLIP_SEGMENT_SETTLE_SEC = float(os.environ.get("CCTV_RECORDED_SEGMENT_SETTLE_SEC
 MOTION_CLIP_DELAY_SEC = 15 + 5 + CLIP_SEGMENT_SETTLE_SEC
 # Свежесть новейшего сегмента для статуса online: два интервала записи с запасом.
 SEGMENT_FRESH_SEC = 30
+# Кадр для мозаики «Все камеры» берётся из буфера, а не у камеры: первый ключевой
+# кадр новейшего закрытого сегмента. Сегмент старше этого — камера «без кадров»:
+# умерший рекордер оставляет в кольце кадры десятиминутной давности.
+FRAME_MAX_AGE_SEC = 60
+FRAME_WIDTH_MAX = 1920  # шире бот не просит: плитка мозаики меньше
+FRAME_TRIES = 3  # битый сегмент (обрыв записи) — пробуем предыдущий
 ERROR_STATUS = {"camera_offline": 503, "not_found": 404, "unavailable": 503,
                 "timeout": 504, "media_too_large": 413, "storage_capacity": 507,
                 "clip_window_empty": 409}
@@ -1064,6 +1070,44 @@ class Bridge:
         except (urllib.error.URLError, TimeoutError, OSError):
             raise BridgeError("camera_offline")
 
+    def latest_frame(self, camera_id: str, width: int = 0) -> tuple[bytes, str]:
+        """Последний кадр камеры из буфера: JPEG и время съёмки (начало сегмента, UTC).
+
+        Камеру не опрашивает: кадр — первый ключевой из новейшего закрытого
+        сегмента рекордера (правило закрытия — как у клипа, CLIP_SEGMENT_SETTLE_SEC:
+        открытый сегмент дал бы рваный кадр). `width` — ширина в пикселях с учётом
+        неквадратного пикселя камеры; 0 — как в потоке (не шире FRAME_WIDTH_MAX).
+        """
+        if camera_id not in self.cameras:
+            raise BridgeError("not_found")
+        width = min(int(width) if 0 < int(width) else FRAME_WIDTH_MAX, FRAME_WIDTH_MAX)
+        segments = sorted((self.buffer_dir / camera_id).glob("*.ts"))
+        clock = time.time()
+        tries = 0
+        for entry in reversed(segments[:-1]):  # новейший пишется прямо сейчас
+            try:
+                info = entry.stat()
+                stamp = parse_time(entry.stem)
+            except (OSError, ValueError):
+                continue
+            if info.st_size == 0 or info.st_mtime > clock - CLIP_SEGMENT_SETTLE_SEC:
+                continue
+            if clock - info.st_mtime > FRAME_MAX_AGE_SEC or tries >= FRAME_TRIES:
+                break
+            tries += 1
+            try:
+                run = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-skip_frame", "nokey",
+                                      "-i", str(entry), "-frames:v", "1",
+                                      "-vf", f"scale=iw*sar:ih,setsar=1,scale='min({width},iw)':-2",
+                                      "-q:v", "4", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, timeout=10)
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+            if run.returncode == 0 and run.stdout[:2] == b"\xff\xd8" and len(run.stdout) <= self.max_snapshot:
+                return run.stdout, stamp.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat()
+        raise BridgeError("camera_offline")
+
     def clip(self, camera: Camera, center_at: str) -> tuple[bytes, str]:
         try:
             centre = parse_time(center_at)
@@ -1307,6 +1351,15 @@ class Handler(BaseHTTPRequestHandler):
         if tail == "config":
             try: return self.json(200, self.server.bridge.registry_config(camera_id))
             except BridgeError as exc: return self.json(ERROR_STATUS[exc.code], {"error": exc.code})
+        if tail == "frame":
+            # Кадр из буфера для мозаики «Все камеры»: камера не опрашивается.
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            try:
+                width = int((query.get("width") or ["0"])[0])
+                body, captured_at = self.server.bridge.latest_frame(camera_id, width)
+            except ValueError: return self.json(400, {"error": "unavailable"})
+            except BridgeError as exc: return self.json(ERROR_STATUS[exc.code], {"error": exc.code})
+            self.send_response(200); self.send_header("content-type", "image/jpeg"); self.send_header("x-captured-at", captured_at); self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body); return
         if path.startswith("/v1/discovery/scans/"):
             try: return self.json(200, self.server.bridge.scan_status(path.rsplit("/", 1)[1]))
             except BridgeError as exc: return self.json(ERROR_STATUS[exc.code], {"error": exc.code})

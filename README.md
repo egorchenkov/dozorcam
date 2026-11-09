@@ -7,7 +7,7 @@ recording buffer from your IP cameras, looks for people (motion gate → YOLO) a
 snapshots and clips to Telegram: to your private chat, a group, or a forum group with a
 topic per camera or per location. No cloud: video lives in the node's RAM and in your chat.
 
-Current release: **<!--site:version-->0.8.0<!--/site-->** ·
+Current release: **<!--site:version-->0.9.0<!--/site-->** ·
 [Changelog](CHANGELOG.md) · [Releases](https://github.com/egorchenkov/dozorcam/releases)
 
 > Provided **as is** (see [CONTRIBUTING](CONTRIBUTING.md)): a one-person home project,
@@ -25,6 +25,8 @@ Current release: **<!--site:version-->0.8.0<!--/site-->** ·
   topic per camera or a topic per location — switch any time with `/mode`, nothing is lost.
 - **Camera map and cards.** One pinned map with every camera, its state and today's events;
   tap a camera for its card: frame, clip, pause, notifications, name, location, settings.
+- **All cameras in one photo.** "📷 All cameras" on the map: a mosaic of the latest frame of
+  every camera with names and frame times, taken from the engine's buffer — cameras are not asked again.
 - **Setup from the chat.** A wizard with a pinned progress, `/add` finds cameras (ONVIF,
   WS-Discovery, typical RTSP paths by IP and login) and even activates a new Hikvision.
 - **Explains its decisions.** Diagnostic journal of rejected candidates and a daily summary.

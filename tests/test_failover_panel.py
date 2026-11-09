@@ -92,6 +92,34 @@ class PanelTest(unittest.TestCase):
         self.assertIn("Switching the engine to b. Press Refresh in a minute.",
                       panel.press(agent, "ok:engine:b:0", "en")["text"])
 
+    def test_bot_confirm_promises_the_same_term_as_after_it(self) -> None:
+        """Вопрос подтверждения перевода бота не обещает «несколько секунд»: тот же срок и
+        объём state, что и сообщение после «Да», во всех локалях (пустые берут en)."""
+        from cctv import i18n
+        term = {"en": "usually within half a minute, up to a minute with a large bot database",
+                "ru": "в пределах полминуты, с большой базой бота до минуты"}
+        langs = sorted(path.stem for path in i18n.LOCALES.glob("*.json"))
+        self.assertIn("ru", langs)
+        for lang in langs:
+            agent = fake_agent(self.cfg)
+            ask = panel.press(agent, "go:bot:b", lang)
+            after = panel.press(agent, "ok:bot:b:0", lang)["text"]
+            phrase = term.get(lang, term["en"])
+            self.assertIn(phrase, ask["text"], lang)
+            self.assertIn(phrase, after, lang)
+            self.assertNotIn("few seconds", ask["text"], lang)
+            self.assertNotIn("несколько секунд", ask["text"], lang)
+            size = " (21.0 МБ)" if lang == "ru" else " (21.0 MB)"
+            self.assertIn(size, ask["text"], lang)
+            self.assertIn(size, after, lang)
+            self.assertEqual(["ok:bot:b:0", panel.REFRESH], [b["data"] for row in ask["buttons"] for b in row])
+        # Объём не известен — срок без скобок; вопрос про движок — прежний.
+        agent = fake_agent(self.cfg)
+        agent.state_size = lambda: 0
+        self.assertIn("hands its data over to b", panel.press(agent, "go:bot:b", "en")["text"])
+        self.assertIn("Recording and detection pause for a minute",
+                      panel.press(agent, "go:engine:b", "en")["text"])
+
     def test_not_checked_yet(self) -> None:
         fresh = {key: status(value["running"], {}) for key, value in STATUSES.items()}
         text = panel.view(fake_agent(self.cfg), "en", statuses=fresh)["text"]

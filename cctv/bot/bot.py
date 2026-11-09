@@ -24,6 +24,7 @@ import uuid
 from dataclasses import dataclass
 
 from .. import __version__, i18n, settings
+from . import mosaic
 from .bridge import Bridge, BridgeError
 from .events import Event
 from .routes import CONSOLE_KEY, PRESETS, Dest, Router, hashtag  # noqa: F401 — CONSOLE_KEY: ключ пульта для тестов и стенда
@@ -82,6 +83,9 @@ CONSOLE_TITLE = "console.title"
 MAP_PAGE_LIMIT = 12
 MAP_ROW = 3
 MAP_BUTTONS_MAX = 90  # лимит Telegram — 100 кнопок на сообщение, запас на служебные
+# «📷 Все камеры»: кадры для мозаики берутся у движка из буфера, не больше стольких
+# запросов разом — каждый кадр движок декодирует отдельным ffmpeg.
+MOSAIC_FETCH_PARALLEL = 4
 # Карта места, открытая на карточке и забытая, сама возвращается к карте:
 # закреп чата должен показывать все камеры, а не ту, что смотрели вчера.
 HOME_VIEW_TTL_SEC = 600
@@ -511,6 +515,9 @@ class CctvBot:
         # параллельные сверки завели бы панель камеры дважды.
         self._sync_lock = asyncio.Lock()
         self._unknown_synced: dict[str, float] = {}
+        # Места, где мозаика «Все камеры» уже собирается: повторное нажатие не плодит вторую.
+        self._mosaic_busy: set[Dest] = set()
+        self._mosaic_task: asyncio.Task | None = None
         self.routes = Router(state, tg, group=lambda: self.chat_id, recipients=self._recipients,
                              t=self._t, icon=topic_icon, asker=_ASKER.get, log=log)
         self.merge_sec = getattr(cfg, "event_merge_sec", EVENT_MERGE_SEC)
@@ -951,6 +958,8 @@ class CctvBot:
                 return await self._ask_credentials(user_id, center_at or "", "", origin)
             if action in ("act", "actall"):
                 return await self._ask_activation(user_id, origin, center_at or "")
+            if action == "mosaic":
+                return self._start_mosaic(origin) if origin is not None else self._t("callback.wrong_topic")
             if action == "addr":
                 self.state.expect_input(user_id, CONSOLE_CAMERA, "addr", INPUT_TTL_SEC)
                 return await self._ask_for_text(origin, self._t("add.ask_address"))
@@ -2332,6 +2341,8 @@ class CctvBot:
         rows = [buttons[i:i + MAP_ROW] for i in range(0, len(buttons), MAP_ROW)]
         if page is not None:
             rows.append([Button(self._t("map.back"), f"cv:map:{issue(CONSOLE_CAMERA, 'map', ttl, '')}")])
+        if live:
+            rows.append([Button(self._t("map.mosaic"), f"cv:mosaic:{issue(CONSOLE_CAMERA, 'mosaic', ttl)}")])
         rows.append([Button(self._t("console.refresh"), f"cv:panel:{issue(CONSOLE_CAMERA, 'panel', ttl)}"),
                      Button(self._t("console.add"), f"cv:add:{issue(CONSOLE_CAMERA, 'add', ttl)}")])
         rows.append([Button(self._t("console.model"), f"cv:model:{issue(CONSOLE_CAMERA, 'model', ttl)}"),
@@ -2339,6 +2350,73 @@ class CctvBot:
         rows.append([Button(self._t("map.mode"), f"cv:mode:{issue(CONSOLE_CAMERA, 'mode', ttl, '')}")])
         return InlineKeyboardMarkup(
             [[InlineKeyboardButton(b.text, callback_data=b.data) for b in row] for row in rows])
+
+    # --- «📷 Все камеры» ------------------------------------------------------
+    def _start_mosaic(self, dest: Dest) -> str:
+        """Нажатие на карте: мозаика собирается фоном (кадры, склейка, заливка дольше
+        ответа на кнопку) и приходит в то же место. Пока собирается — второй не будет."""
+        if dest in self._mosaic_busy:
+            return self._t("mosaic.busy")
+        self._mosaic_busy.add(dest)
+        self._mosaic_task = asyncio.create_task(self.send_mosaic(dest))
+        self._mosaic_task.add_done_callback(lambda _task: self._mosaic_busy.discard(dest))
+        return self._t("mosaic.collecting")
+
+    async def send_mosaic(self, dest: Dest) -> None:
+        """Одно фото из последних кадров всех камер (больше MOSAIC_TILES_MAX — несколько).
+
+        Кадры — из буфера движка (Bridge.latest_frame): камеры не опрашиваются,
+        поэтому мозаика не нагружает ни камеры, ни их канал. Порядок — как на карте.
+        """
+        registry = await self._registry()
+        if isinstance(registry, BridgeError):
+            await self._send(dest, self._t("mosaic.failed", reason=self._error(registry.code)))
+            return
+        live = [c for c in registry[0] if c.status != "retired" and valid_id(c.camera_id)]
+        cameras = [camera for _location, group in self._sections(live) for camera in group]
+        if not cameras:
+            await self._send(dest, self._t("menu.empty"))
+            return
+        batches = mosaic.pages(cameras)
+        gate = asyncio.Semaphore(MOSAIC_FETCH_PARALLEL)
+        stamp = self._time(utcnow())
+        for number, batch in enumerate(batches, start=1):
+            width = mosaic.geometry(len(batch))[2]
+            tiles = await asyncio.gather(*(self._mosaic_tile(camera, width, gate) for camera in batch))
+            try:
+                photo = await asyncio.to_thread(mosaic.compose, list(tiles))
+            except (ValueError, ImportError) as exc:
+                self.log(f"мозаика: не собрана ({type(exc).__name__}: {exc})")
+                await self._send(dest, self._t("mosaic.failed", reason=self._error("unavailable")))
+                return
+            caption = (self._t("mosaic.caption", time=stamp) if len(batches) == 1 else
+                       self._t("mosaic.caption_page", page=number, pages=len(batches), time=stamp))
+            try:
+                await self.tg.send_photo(**dest.kw(), photo=photo, caption=caption,
+                                         read_timeout=self.cfg.tg_media_timeout_sec,
+                                         write_timeout=self.cfg.tg_media_timeout_sec)
+            except Exception as exc:  # сеть, лимит Telegram: сказать, а не молчать
+                self.log(f"мозаика: отправка не прошла ({type(exc).__name__})")
+                if not (dest.private and _unreachable(exc)):
+                    await self._send(dest, self._t("mosaic.failed", reason=self._error("unavailable")))
+                return
+
+    async def _mosaic_tile(self, camera, width: int, gate: asyncio.Semaphore) -> mosaic.Tile:
+        """Плитка камеры: кадр из буфера и его время; нет кадра — плашка «нет кадров»."""
+        if camera.status == "paused":
+            return mosaic.Tile(camera.title, note=self._t("console.state.paused"))
+        no_frames = mosaic.Tile(camera.title, note=self._t("console.state.no_frames"))
+        if camera.status == "unreachable":  # площадка молчит — её мост не ответит и за кадром
+            return no_frames
+        async with gate:
+            try:
+                body, captured_at = await asyncio.to_thread(self.bridge.latest_frame,
+                                                            camera.camera_id, width)
+            except BridgeError as exc:
+                if exc.code != "camera_offline":
+                    self.log(f"мозаика {camera.camera_id}: кадра нет ({exc.code})")
+                return no_frames
+        return mosaic.Tile(camera.title, human_clock(captured_at, self.zone) if captured_at else "", body)
 
     async def console_text(self, viewer: Dest | None = None) -> str:
         registry = await self._registry()

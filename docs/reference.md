@@ -63,9 +63,18 @@ previous mode is kept.
 One pinned message per place: the "Control" topic, the group itself in the flat mode, or a
 private chat of each person without a group. It shows "📍 Cameras: 4 · online: 4 · events
 today: 12", cameras in sections by location, in a private chat 📩 (or 🔕 without a group) for your own subscription, a button
-per camera, ➕ Add camera, 🧠 Detector model, 🎯 Thresholds, 🔀 Where events go, and
+per camera, 📷 All cameras, ➕ Add camera, 🧠 Detector model, 🎯 Thresholds, 🔀 Where events go, and
 "⬆️ Version X is available" when there is one. With more than 12 cameras in several
 locations the buttons go by location pages.
+
+**📷 All cameras** sends one photo to the same place: a mosaic of the latest frame of every
+camera, in the order of the map. The grid follows the number of cameras (1, 2×1, 2×2, 3×2,
+3×3, 4×3, 4×4); each tile is signed with the camera name and the time of its frame; a camera
+without a fresh frame (down, no video for a minute) gets a "no frames" plate, a paused one —
+"paused". Frames come from the engine's rolling buffer — the first key frame of the newest
+finished segment, usually 5–10 s old — so the cameras are not asked again. More than 16
+cameras — several mosaics, split evenly. The photo stays within the Telegram limits (up to
+2560 px wide, a few MB).
 
 Tap a camera and the same message turns into its **card**: status, location and hashtags,
 📷 Frame, 🎞 Clip 30 s, 🔄 Status, 📩 To my DM, ⏸ Pause, ✏️ Name, 📍 Location,

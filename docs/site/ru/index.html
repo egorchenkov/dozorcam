@@ -28,7 +28,7 @@
 <div class="wrap">
 <section class="hero" style="padding-top:48px">
   <div>
-    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Релиз <b><!--site:version-->0.8.0<!--/site--></b> · установка одной командой, группа с темами не обязательна →</a>
+    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Релиз <b><!--site:version-->0.9.0<!--/site--></b> · установка одной командой, группа с темами не обязательна →</a>
     <h1>Ваши камеры, ваш Telegram, без облака</h1>
     <p class="lead">Dozorcam следит за IP-камерами на вашем Linux-узле, распознаёт <b>людей</b> — а не листья,
     тени и кошку — и присылает в Telegram снимок с человеком в рамке и клип этого момента: прямо в личку,
@@ -70,6 +70,7 @@
     <div class="card"><span class="ico">📸</span><h3>Снимки и клипы в Telegram</h3><p>Снимок с человеком в рамке, клип вокруг этого момента по кнопке. События камеры за минуту — один пост; хэштеги фильтруют ленту по камере или месту.</p></div>
     <div class="card new"><span class="ico">🔀</span><h3>Свой режим доставки</h3><p>Сюда в личку, одна группа без тем, тема на камеру или тема на локацию. Меняется в любой момент командой <code>/mode</code> — ничего не теряется.</p></div>
     <div class="card new"><span class="ico">📍</span><h3>Карта камер и карточки</h3><p>Одна закреплённая карта: все камеры, их состояние и события за день. Нажмите камеру — её карточка: кадр, клип, пауза, уведомления, имя, локация, настройка.</p></div>
+    <div class="card new"><span class="ico">🧩</span><h3>Все камеры одним фото</h3><p>«📷 Все камеры» на карте присылает одну мозаику из последних кадров всех камер: сетка под их число, на каждой плитке имя камеры и время кадра, у неработающей — «нет кадров». Кадры берутся из буфера движка — камеры повторно не опрашиваются, без VPN и веб-страниц.</p></div>
     <div class="card new"><span class="ico">🔎</span><h3>Камера — за минуту</h3><p><code>/add</code> находит камеры (ONVIF, WS-Discovery) или по IP и логину перебирает типовые пути RTSP Reolink, Tapo, Uniview, Axis и других. Новую Hikvision бот даже активирует сам.</p></div>
     <div class="card"><span class="ico">🔒</span><h3>Без облака — данные ваши</h3><p>Видео — короткий буфер в оперативной памяти вашего узла; долговременная копия — ваш собственный чат Telegram. Ни аккаунтов, ни телеметрии, ни подписки.</p></div>
     <div class="card new"><span class="ico">🛟</span><h3>Несколько узлов, один бот</h3><p>Две-три машины делят движок и бота: <code>/nodes</code> переводит роль одним нажатием, с <code>auto = true</code> упавший узел заменяется сам, а каждое сообщение говорит, с какого узла оно пришло. <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/failover.ru.md">Отказоустойчивость</a></p></div>
@@ -91,7 +92,7 @@
     <li><b>5 · Telegram</b>Снимок с рамкой туда, куда идут события; клип — по кнопке.</li>
   </ol>
   <div class="grid c3" style="margin-top:22px">
-    <div class="card new"><h3>Новое в 0.8.0: детектор на NPU</h3><p>Детектор теперь работает на onnxruntime — та же модель и те же пороги, на x86 примерно на 40 % быстрее на кадр, — а при <code>person_backend = "auto"</code> (по умолчанию) сам находит ускоритель: NPU Rockchip RK3576/RK3588/RK3568 (экспериментально, проверено на RK3576; рантайм — в образе arm64), Intel iGPU/NPU через OpenVINO, NVIDIA и Hailo-8 — экспериментально. Каждый на старте проходит самопроверку против процессора или тихо пропускается; <code>/model</code> показывает, на чём идёт детекция, а откалиброванная камера после смены сама калибруется заново. <code>rknn-convert.sh</code> собирает модель для NPU по вашим кадрам. С 0.7.x — несколько узлов, один бот, автопереключение. <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/accelerators.ru.md">Ускорители детектора</a>.</p></div>
+    <div class="card new"><h3>Новое в 0.9.0: все камеры одним фото</h3><p>«📷 Все камеры» на карте камер присылает одну мозаику из последних кадров всех камер в порядке карты: сетка под их число, на каждой плитке имя камеры и время её кадра, у неработающей — «нет кадров», у поставленной на паузу — «на паузе»; больше 16 камер — несколько мозаик. Кадры берутся из кольцевого буфера движка, поэтому камеры повторно не опрашиваются. С 0.8.0 детектор сам находит NPU; с 0.7.x — несколько узлов, один бот, автопереключение. <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/reference.ru.md#карта-камер-и-карточка-камеры">Карта камер</a>.</p></div>
     <div class="card new"><h3>События — куда удобно</h3><p>Группа с темами больше не обязательна: начните в личке одним нажатием, переходите в группу или темы позже. Мастер закрепляет свой прогресс и сам проверяет группу.</p></div>
     <div class="card new"><h3>Карта вместо пульта</h3><p>Закреплённая карта камер с карточками, склейка событий, хэштеги, <code>/invite</code> для ещё одного человека, время в вашем поясе. <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.ru.md">Список изменений</a></p></div>
   </div>
@@ -321,7 +322,7 @@ dozorcam restore &lt;файл&gt;</code></pre><p>Один файл с настр
 
 <footer>
   <div class="wrap">
-    <span>Dozorcam <!--site:version-->0.8.0<!--/site--></span>
+    <span>Dozorcam <!--site:version-->0.9.0<!--/site--></span>
     <a href="https://github.com/egorchenkov/dozorcam/releases">Релизы</a>
     <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.ru.md">Список изменений</a>
     <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/README.md">Документация</a>
