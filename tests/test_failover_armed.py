@@ -28,10 +28,19 @@ TOKEN = "1234567:AAFakeTokenForUnitTestsOnly000000000"
 SECRET = "unit-test-failover-secret-0123456789"
 
 
+_ISSUED_PORTS: set[int] = set()
+
+
 def free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+    """Свободный порт loopback, ни разу не выданный в этом процессе: ядро может вернуть
+    только что освобождённый порт повторно, и два агента конфига получали один адрес."""
+    while True:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        if port not in _ISSUED_PORTS:
+            _ISSUED_PORTS.add(port)
+            return port
 
 
 class TcpRecorder:

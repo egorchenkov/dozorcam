@@ -29,12 +29,21 @@ CAMERAS = {"cameras": [{"camera_id": "testcam", "title": "Тест", "site": "la
                         "rtsp_url": "rtsp://192.0.2.1/stream"}]}
 
 
+_ISSUED_PORTS: set[int] = set()
+
+
 def free_port() -> int:
+    """Свободный порт loopback, ни разу не выданный в этом процессе: ядро может вернуть
+    только что освобождённый порт повторно, и два агента конфига получали один адрес."""
     import socket
 
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+    while True:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        if port not in _ISSUED_PORTS:
+            _ISSUED_PORTS.add(port)
+            return port
 
 
 class LinkMixin:
