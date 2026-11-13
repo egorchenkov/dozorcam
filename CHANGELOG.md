@@ -3,6 +3,28 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning: [SemVer](https://semver.org/).
 Russian: [CHANGELOG.ru.md](CHANGELOG.ru.md) (since 0.3.1).
 
+## [Unreleased]
+
+## [0.9.1] — 2026-11-13
+
+### Fixed
+
+- Failover: an agent whose node address is not up yet when the container starts (a VPN address
+  that comes up after Docker on reboot) no longer leaves its role down until a manual restart —
+  the bind is retried every 10 s, the healthcheck says `waiting: … retrying every 10 s`, and
+  the role starts by itself once the address appears; `net.ipv4.ip_nonlocal_bind` is no longer
+  needed ([docs/failover.md](docs/failover.md#configuration)).
+- Failover: the engine and the bot of one node must use one configuration directory — this is
+  now stated in [docs/failover.md](docs/failover.md#one-configuration-for-all-nodes), and an
+  agent writes a warning to the log when the other role of its node runs on a different
+  directory (otherwise one role accepted the other's revision and stayed down with "no config").
+- Detector model status on an accelerator: with `person_backend = auto` and the model from the
+  configuration (not chosen in the bot), `/model` showed the CPU backend without the accelerator
+  line although detection ran on the NPU, and the bot's threshold menu used the CPU key (a manual
+  threshold set there did not apply on the NPU) — the status was written before the accelerator was
+  selected. It is now rewritten once the detectors are built: the actual backend, the accelerator and
+  the selection reason; the threshold menu uses the `@rknn` key. A silent fallback to CPU is still shown with its reason.
+
 ## [0.9.0] — 2026-11-09
 
 ### Added

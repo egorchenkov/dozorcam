@@ -7,7 +7,7 @@
 в Telegram: в личку, в группу или в группу с темами — тема на камеру или на локацию.
 Облака нет: видео живёт в RAM узла и в вашем чате.
 
-Текущий релиз: **<!--site:version-->0.9.0<!--/site-->** ·
+Текущий релиз: **<!--site:version-->0.9.1<!--/site-->** ·
 [Список изменений](CHANGELOG.ru.md) · [Релизы](https://github.com/egorchenkov/dozorcam/releases)
 
 > Проект распространяется «как есть» (см. [CONTRIBUTING](CONTRIBUTING.md#по-русски)):

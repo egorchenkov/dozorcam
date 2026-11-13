@@ -235,6 +235,75 @@ class ChooseTest(Fixture):
         self.assertEqual(label, "yolov5/yolov5n.onnx@rknn")  # порог камеры — свой у NPU
 
 
+class ManagerStatusTest(Fixture):
+    """Статус модели (бот /model, ключ порога) после выбора ускорителя на старте."""
+
+    accelerated = ChooseTest.accelerated
+
+    def manager(self):
+        self.state = self.dir / "state"
+        env = {"CCTV_PERSON_MODEL_FAMILY": "yolov5", "CCTV_MODEL_DIRS": str(self.dir)}
+        with contextlib.redirect_stdout(io.StringIO()):
+            return model_switch.ModelManager(self.state, env, log=self.log.append)
+
+    def register(self, models, camera_id="cam1"):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return models.register(camera_id)
+
+    def status(self) -> dict:
+        return model_switch._read(self.state / model_switch.STATUS_NAME)
+
+    def test_config_model_on_npu_status_names_rknn_after_detector_is_built(self):
+        # Старт без выбора из бота, auto, NPU есть и самопроверка прошла.
+        from cctv.engine import threshold_calibration
+        self.graph()
+        patch, net = self.accelerated()
+        with self.configured("auto"), self.candidate(person_accel.Candidate("rknn", "rk3576")), patch:
+            models = self.manager()
+            self.assertEqual(self.status()["active"]["backend"], "onnxruntime")  # до сборки — CPU-эталон
+            holder = self.register(models)
+            self.register(models, "cam2")
+        self.assertIsInstance(holder._detector.net, net)
+        active = self.status()["active"]
+        self.assertEqual(active["backend"], "rknn")
+        self.assertEqual((active["accel"]["reason"], active["accel"]["accelerator"]), ("selfcheck_ok", "rk3576"))
+        self.assertNotIn("state", self.status())  # исхода заявки не было — и не появилось
+        catalog = model_switch.catalog(self.state, {"CCTV_MODEL_DIRS": str(self.dir)})
+        self.assertEqual(catalog["active"]["backend"], "rknn")
+        overview = threshold_calibration.overview(self.state, [("cam1", "Cam 1")], catalog["active"])
+        self.assertEqual(overview["model"], "yolov5/yolov5n.onnx@rknn")
+
+    def test_failed_selfcheck_status_stays_cpu_with_reason(self):
+        # Тихий откат: детекция на CPU, в статусе — ускоритель и причина отката.
+        self.graph()
+        patch, _ = self.accelerated(fail=True)
+        with self.configured("auto"), self.candidate(person_accel.Candidate("rknn", "rk3576")), patch:
+            models = self.manager()
+            holder = self.register(models)
+        self.assertIsInstance(holder._detector.net, person_backends.OnnxRuntimeNet)
+        active = self.status()["active"]
+        self.assertEqual(active["backend"], "onnxruntime")
+        self.assertEqual((active["accel"]["reason"], active["accel"]["accelerator"]),
+                         ("rknn_inference_failed", "rk3576"))
+        self.assertEqual(model_switch.label(holder.settings), "yolov5/yolov5n.onnx")
+
+    def test_switch_outcome_survives_status_refresh(self):
+        # Исход заявки из бота (откат) и его время не затираются уточнением бэкенда.
+        self.graph()
+        patch, _ = self.accelerated()
+        with self.configured("auto"), self.candidate(person_accel.Candidate("rknn", "rk3576")), patch:
+            models = self.manager()
+            with contextlib.redirect_stdout(io.StringIO()):
+                outcome = models.switch({"family": "yolox", "model": "missing.onnx"}, "req1")
+            before = self.status()
+            self.register(models)
+        self.assertEqual(outcome, "rolled_back")
+        after = self.status()
+        self.assertEqual({k: after[k] for k in ("request_id", "state", "error", "at")},
+                         {k: before[k] for k in ("request_id", "state", "error", "at")})
+        self.assertEqual(after["active"]["backend"], "rknn")
+
+
 class FramesTest(unittest.TestCase):
     def test_selfcheck_frames_are_shipped_with_the_package(self):
         frames = person_accel.frames()

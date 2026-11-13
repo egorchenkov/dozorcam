@@ -98,6 +98,14 @@ between machines — `https` with `tls_cert`, `tls_key`, `tls_ca`; unknown keys 
 `CCTV_NODE` must name one of the nodes. Every request between agents is signed with
 `secret`, has a time window and cannot be replayed.
 
+**Agent address not up yet.** An agent listens on its node's address from `address` /
+`engine_agent` / `bot_agent`. If that address is not there when the container starts — for
+example a VPN (WireGuard) address that comes up after Docker on reboot — the role waits and
+tries again every 10 s, the healthcheck says
+`waiting: failover agent cannot listen on … — retrying every 10 s`. As soon as the address
+appears the agent takes it and the role starts by itself, without restarting the container
+and without `net.ipv4.ip_nonlocal_bind`.
+
 A role on another machine also needs the engine↔bot link over the network: set
 `internal_tls = true` in `[common]` (see [reference: TLS](reference.md#engine--bot-link-and-tls))
 and the node's `bridge_url` / `events_url`.
@@ -223,6 +231,16 @@ request signed with `secret`), without the engine or the bot taking part:
 A change reaches the armed nodes within seconds (the holder checks its files every 2 s and
 sends the change at once); a node that was down catches up at the next check (`check_sec`).
 `/nodes` keeps showing which node holds each role.
+
+**One directory for both roles of a node.** The engine and the bot containers of a node
+mount the same configuration directory (`CCTV_CONFIG_PATH`, `./config` by default) — as in
+the shipped `compose.yml`. The agents of both roles hand out revisions of their directory: with
+different directories for the engine and the bot one role accepts the other role's revision
+(the bot — the engine's directory without the bot token) and stays down with "no config".
+An agent compares its directory with the other role of its node at every check
+(`check_sec`) and writes to the log once:
+`… configuration directory of the engine role does not match the one of the bot role on this
+same node …` (the log line is in Russian, grep for `один каталог конфига`).
 
 **Where to edit.** Edit the configuration directory on the node that holds the role. An
 edit on an armed node is not handed out (the log says so). A new node needs only the

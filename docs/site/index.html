@@ -28,7 +28,7 @@
 <div class="wrap">
 <section class="hero" style="padding-top:48px">
   <div>
-    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Release <b><!--site:version-->0.9.0<!--/site--></b> · install in one command, no forum group needed →</a>
+    <a class="badge" href="https://github.com/egorchenkov/dozorcam/releases/latest">Release <b><!--site:version-->0.9.1<!--/site--></b> · install in one command, no forum group needed →</a>
     <h1>Your cameras, your Telegram, no cloud</h1>
     <p class="lead">Dozorcam watches IP cameras on your own Linux box, recognises <b>people</b> — not leaves,
     shadows or the cat — and sends a snapshot with the person boxed and a clip of the moment to Telegram:
@@ -92,7 +92,7 @@
     <li><b>5 · Telegram</b>Snapshot with a box where events go; clip on a tap.</li>
   </ol>
   <div class="grid c3" style="margin-top:22px">
-    <div class="card new"><h3>New in 0.9.0: all cameras in one photo</h3><p>“📷 All cameras” on the camera map sends one mosaic of the latest frame of every camera, in the order of the map: a grid sized to their number, each tile signed with the camera name and the time of its frame, “no frames” for a camera that is down and “paused” for a paused one; more than 16 cameras — several mosaics. Frames come from the engine's rolling buffer, so the cameras are not asked again. Since 0.8.0 the detector finds an NPU by itself; since 0.7.x several nodes, one bot, automatic takeover. <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/reference.md#camera-map-and-camera-card">Camera map</a>.</p></div>
+    <div class="card new"><h3>New in 0.9: all cameras in one photo</h3><p>“📷 All cameras” on the camera map sends one mosaic of the latest frame of every camera, in the order of the map: a grid sized to their number, each tile signed with the camera name and the time of its frame, “no frames” for a camera that is down and “paused” for a paused one; more than 16 cameras — several mosaics. Frames come from the engine's rolling buffer, so the cameras are not asked again. Since 0.8.0 the detector finds an NPU by itself; since 0.7.x several nodes, one bot, automatic takeover. Fixed in 0.9.1: a failover role whose node address comes up after Docker (a VPN on reboot) waits for it and starts by itself instead of staying down until a restart; <code>/model</code> shows the NPU when it runs the detector, and the threshold menu applies to it. <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/reference.md#camera-map-and-camera-card">Camera map</a>.</p></div>
     <div class="card new"><h3>Events where you want them</h3><p>No forum group needed any more: start in your private chat with one tap, move to a group or topics later. The setup wizard pins its progress and checks the group by itself.</p></div>
     <div class="card new"><h3>A map instead of a panel</h3><p>A pinned camera map with cards, merged events, hashtags, <code>/invite</code> for one more person, times in your time zone. <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Full changelog</a></p></div>
   </div>
@@ -322,7 +322,7 @@ dozorcam restore &lt;file&gt;</code></pre><p>One file with settings, the camera 
 
 <footer>
   <div class="wrap">
-    <span>Dozorcam <!--site:version-->0.9.0<!--/site--></span>
+    <span>Dozorcam <!--site:version-->0.9.1<!--/site--></span>
     <a href="https://github.com/egorchenkov/dozorcam/releases">Releases</a>
     <a href="https://github.com/egorchenkov/dozorcam/blob/master/CHANGELOG.md">Changelog</a>
     <a href="https://github.com/egorchenkov/dozorcam/blob/master/docs/README.md">Documentation</a>

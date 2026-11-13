@@ -291,7 +291,25 @@ class ModelManager:
             if holder.settings != self.settings:  # смена прошла, пока камера собиралась
                 holder.swap(self.build(self.settings), self.settings)
             self.holders[camera_id] = holder
+            self._refresh_active()
         return holder
+
+    def _refresh_active(self) -> None:
+        """Модель из конфига попадает в статус до сборки детекторов, а ``auto`` выбирает
+        ускоритель на первой сборке — до неё в статусе CPU-эталон. После сборки статус
+        называет фактический бэкенд (бот /model, ключ порога ``@rknn``). Исход заявки и
+        её время не трогаются. Вызывать под ``_switch_lock``."""
+        if self.settings is None:
+            return
+        path = self.state_dir / STATUS_NAME
+        status = _read(path)
+        active = describe(self.settings)
+        if status.get("active") == active:
+            return
+        try:
+            _write(path, {**status, "active": active, "at": status.get("at", time.time())})
+        except OSError as exc:
+            self.log(f"person_model_status_write_failed error={type(exc).__name__}")
 
     def wait_change(self, generation: int, timeout: float) -> int:
         with self.changed:

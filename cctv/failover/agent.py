@@ -90,6 +90,11 @@ class Agent:
         self.store = share.Store(self.state_dir)
         self.disk_lock = threading.RLock()
         self.role_sent = ""
+        # sha локального каталога (виден соседям в статусе) и расхождение с каталогом
+        # соседней роли этого же узла: замеченное на прошлой сверке и уже записанное в журнал.
+        self.local_sha = ""
+        self.dir_mismatch: tuple[str, str] | None = None
+        self.dir_warned: tuple[str, str] | None = None
         # Автопереключение: когда (по монотонным часам) слышали агента роли на каждом
         # узле и его последний статус; отступление после конфликта опроса Telegram.
         self.started_mono = time.monotonic()
@@ -539,11 +544,32 @@ class Agent:
                     self.adopt(role, item)
         # Сначала назначения, потом «услышан»: кворум не должен вернуться раньше новой эпохи.
         self._hear({node: result for (node, role), result in found.items() if role == self.role})
+        self._check_sibling(found)
         try:
             self.catch_up(found, timeout)
         except Exception as exc:  # сверка не должна ронять агента
             self.log(f"отказоустойчивость: сверка конфига: {type(exc).__name__}: {exc}")
         return found
+
+    def _check_sibling(self, found: dict) -> None:
+        """Обе роли узла должны работать от одного каталога конфига (docs/failover.md).
+
+        Ревизию раздают агенты обеих ролей: при разных каталогах агент бота принимает
+        ревизию из каталога движка (или наоборот) и роль не стартует с «нет конфига».
+        Правку каталога агенты двух ролей замечают с разницей до SHARE_TICK_SEC, поэтому
+        в журнал — только расхождение, которое держится две сверки подряд.
+        """
+        other = "bot" if self.role == "engine" else "engine"
+        theirs = str((found.get((self.cfg.me, other)) or {}).get("local") or "")
+        pair = (self.local_sha, theirs) if self.local_sha and theirs and theirs != self.local_sha else None
+        if pair is not None and pair == self.dir_mismatch and pair != self.dir_warned:
+            self.log(f"отказоустойчивость: каталог конфига роли {self.role} не совпадает с каталогом роли "
+                     f"{other} на этом же узле — у обеих ролей узла должен быть один каталог конфига "
+                     f"(docs/failover.md), иначе роль примет ревизию соседней роли и не запустится")
+            self.dir_warned = pair
+        if pair is None:
+            self.dir_warned = None
+        self.dir_mismatch = pair
 
     # --- раздаваемый конфиг (share.py) -----------------------------------------
     def share_tick(self) -> None:
@@ -565,7 +591,7 @@ class Agent:
         что сделать. Пока ревизий нет ни у кого, первую выпускает держатель роли.
         """
         files = share.read_files(self.local_dir, share.FILES)
-        sha = share.digest(files)
+        sha = self.local_sha = share.digest(files)
         with self.disk_lock:
             seen = self.store.seen()
             if sha == seen:
@@ -688,7 +714,7 @@ class Agent:
                     "assign": json.loads(json.dumps(self.assign)), "running": self.running,
                     "active": self.assign[self.role]["holder"] == self.cfg.me,
                     "health": dict(self.health), "now": self.clock(), "config": self.store.meta(),
-                    "auto": self.cfg.auto, "heard": self._ages() if self.cfg.auto else {},
+                    "local": self.local_sha, "auto": self.cfg.auto, "heard": self._ages() if self.cfg.auto else {},
                     "fenced": (self.cfg.auto and self.assign[self.role]["holder"] == self.cfg.me
                                and not self.active()),
                     "snapshot": self.snapshot[0] if self.snapshot and self.running else "",

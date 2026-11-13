@@ -56,6 +56,9 @@ BACKOFF_START_SEC = 5.0
 BACKOFF_MAX_SEC = 300.0
 # Процесс, проживший столько, считается здоровым: следующая пауза снова короткая.
 BACKOFF_RESET_SEC = 600.0
+# Агент слоя не занял свой адрес (адрес WireGuard/VPN поднимается позже Docker после
+# перезагрузки): повтор bind с такой паузой, пока адрес не появится.
+BIND_RETRY_SEC = 10.0
 STOP_GRACE_SEC = 15.0
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
 
@@ -194,13 +197,19 @@ class Supervisor:
     def problem(self, state: str, message: str) -> None:
         """Понятная причина простоя: в журнал один раз, в статус — каждый тик."""
         if message != self.last_problem:
-            prefix = i18n.t("supervisor.no_config", self.lang) if state == "no_config" else state
-            log(f"{prefix}: {message}")
+            log(f"{state_prefix(state, self.lang)}: {message}")
             self.last_problem = message
         write_status(state, message, role=self.role)
 
     def fingerprint(self) -> tuple:
         return config_fingerprint(self.node_env, failover_share.watched(self.node_env))
+
+    def wait_retry(self, fingerprint: tuple, state: str, message: str) -> None:
+        """Причина в статус и журнал, пауза BIND_RETRY_SEC (раньше — если правили конфиг)."""
+        deadline = time.monotonic() + BIND_RETRY_SEC
+        while not self.stopping and time.monotonic() < deadline and self.fingerprint() == fingerprint:
+            self.problem(state, message)
+            self.sleep(min(TICK_SEC, max(deadline - time.monotonic(), 0)))
 
     def wait_config_change(self, fingerprint: tuple, state: str, message: str) -> None:
         active = self.layer.active() if self.layer is not None else None
@@ -238,8 +247,11 @@ class Supervisor:
             agent.start()
         except OSError as exc:
             agent.stop()
-            return "no_config", i18n.t("supervisor.failover_listen", self.lang,
-                                       url=cfg.node(cfg.me).agent(self.role), reason=exc)
+            # Не ошибка конфига: адрес узла может подняться позже (VPN после Docker) —
+            # run() повторит bind через BIND_RETRY_SEC, не дожидаясь правки конфига.
+            return "waiting", i18n.t("supervisor.failover_listen", self.lang,
+                                     url=cfg.node(cfg.me).agent(self.role), reason=exc,
+                                     sec=f"{BIND_RETRY_SEC:g}")
         self.layer, self.layer_cfg = agent, cfg
         return None
 
@@ -301,6 +313,9 @@ class Supervisor:
                 problem = self.attach_layer()
                 if self.fingerprint() != fingerprint:
                     continue  # агент при старте принял или выпустил ревизию конфига
+                if problem and problem[0] == "waiting":
+                    self.wait_retry(fingerprint, *problem)
+                    continue
                 if problem:
                     self.wait_config_change(fingerprint, *problem)
                     continue
@@ -500,6 +515,13 @@ class BotSupervisor(Supervisor):
         return failover_probe.telegram(settings.telegram_api(resolved), resolved.get("CCTV_BOT_TOKEN", ""))
 
 
+def state_prefix(state: str, lang: str | None) -> str:
+    """Начало строки причины простоя: «нет конфига» / «жду» на языке установки."""
+    if state in ("no_config", "waiting"):
+        return i18n.t(f"supervisor.{state}", lang)
+    return state
+
+
 def token_rejected(token: str, lang: str | None = None) -> str:
     """Причина, если Telegram отверг токен; сетевой сбой — не повод не запускаться."""
     try:
@@ -543,8 +565,7 @@ def health() -> int:
                      epoch=status.get("epoch", "?")))
         return 0
     if state != "running":
-        prefix = i18n.t("supervisor.no_config", lang) if state == "no_config" else state
-        print(f"{prefix}: {status.get('detail', '')}")
+        print(f"{state_prefix(state, lang)}: {status.get('detail', '')}")
         return 1
     dead = [name for name, alive in status.get("children", {}).items() if not alive]
     if dead:

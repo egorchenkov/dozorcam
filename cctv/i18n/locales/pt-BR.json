@@ -623,6 +623,7 @@
  "nodes.started.size": "",
  "supervisor.armed": "",
  "supervisor.failover_listen": "",
+ "supervisor.waiting": "",
  "failover.bad_value": "",
  "failover.bad_url": "",
  "failover.bad_name": "",
